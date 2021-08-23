@@ -1,3 +1,4 @@
 name: Itay Page
 markdown: kramdown
 theme: jekyll-theme-cayman
+permalink: /blog/:year/:month/:day/:title
