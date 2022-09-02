@@ -24,8 +24,8 @@ github_username: itaysnir
 
 # Build settings
 markdown: kramdown
-#theme: minima 
-remote_theme: poole/lanyon
+theme: minima 
+#remote_theme: poole/lanyon
 plugins:
   - jekyll-feed
 
