@@ -24,8 +24,8 @@ github_username: itaysnir
 
 # Build settings
 markdown: kramdown
-theme: minima 
-#remote_theme: vszhub/not-pure-poole
+#theme: minima 
+remote_theme: vszhub/not-pure-poole
 plugins:
   - jekyll-feed
 
