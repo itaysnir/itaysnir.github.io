@@ -3,16 +3,14 @@ layout: page
 title: About
 permalink: /about/
 ---
+Hello!
 
-This is the base Jekyll theme. You can find out more info about customizing your Jekyll theme, as well as basic Jekyll usage documentation at [jekyllrb.com](https://jekyllrb.com/)
+My name is Itay Snir. My main interests are kernel development, system exploitation and vuln research.
+This site is my logger, so stuff will get very random. 
 
 You can find the source code for Minima at GitHub:
 [jekyll][jekyll-organization] /
 [minima](https://github.com/jekyll/minima)
-
-You can find the source code for Jekyll at GitHub:
-[jekyll][jekyll-organization] /
-[jekyll](https://github.com/jekyll/jekyll)
 
 
 [jekyll-organization]: https://github.com/jekyll

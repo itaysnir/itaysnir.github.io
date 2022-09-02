@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Welcome to Jekyll!"
+title:  "Welcome to Itay's site!"
 date:   2022-09-02 19:59:43 +0300
 categories: jekyll update
 ---
