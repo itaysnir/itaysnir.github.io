@@ -25,8 +25,8 @@ github_username: itaysnir
 
 # Build settings
 markdown: kramdown
-#theme: minima 
-remote_theme: pages-themes/hacker
+theme: minima 
+#remote_theme: pages-themes/hacker
 plugins:
   - jekyll-feed
 
