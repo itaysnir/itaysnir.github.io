@@ -1,2 +1,1 @@
-# H1 Heading
-## H2 Heading
+# Hello, welcome to Itay's site!
