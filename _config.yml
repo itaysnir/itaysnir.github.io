@@ -25,9 +25,8 @@ github_username: itaysnir
 
 # Build settings
 markdown: kramdown
-remote_theme: pages-themes/hacker@v0.2.0
+theme: Biscuit 
 plugins:
-  - jekyll-remote-theme
   - jekyll-feed
 
 # Exclude from processing.
