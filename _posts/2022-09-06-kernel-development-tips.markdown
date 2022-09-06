@@ -7,6 +7,7 @@ categories: jekyll update
 
 1. Clone your desired kernel tree
 
+
 2. Create a .config file
 Personally, i highly discourage using "make menuconfig". This method includes way too many useless drivers, significally increasing compilation time. 
 
@@ -27,7 +28,6 @@ Also - to avoid any pem certificate warning crap, disable the following config a
 <KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
 {% endhighlight %}
 
-[great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
 
 3. Compile:
 Make sure the compilation machine contains at least 4 cores:
@@ -48,3 +48,8 @@ Hooray! our lovely kernel now resides at the boot directory:
 {% highlight bash %}
 <KDIR>/arch/x86/boot/bzImage
 {% endhighlight %}
+
+
+4. Building file system image:
+
+[great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
