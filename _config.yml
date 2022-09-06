@@ -24,7 +24,8 @@ github_username: itaysnir
 
 # Build settings
 markdown: kramdown
-theme: minima 
+theme: jekyll-theme-hacker
+#theme: minima 
 #remote_theme: poole/lanyon
 plugins:
   - jekyll-feed
@@ -40,3 +41,8 @@ plugins:
 #   - vendor/cache/
 #   - vendor/gems/
 #   - vendor/ruby/
+
+# Itay Additions
+
+# Allow future-date posts
+future: true

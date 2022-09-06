@@ -8,28 +8,30 @@ categories: jekyll update
 1. Clone your desired kernel tree
 
 
-2. Create a .config file
+2. Create a .config file:
+
 Personally, i highly discourage using "make menuconfig". This method includes way too many useless drivers, significally increasing compilation time. 
 
 Instead, i sugget using:
 {% highlight bash %}
 make localmodconfig
 {% endhighlight %}
-Which configurates only the loaded modules, as stated by lsmod. 
+Which configurates only the currently loaded modules, as stated by lsmod. 
 
-Another good alternative, is using :
+Another good alternative, is using:
 {% highlight bash %}
 make allnoconfig
 {% endhighlight %}
 And manually enable few of the desired modules, as stated [in this great post][great-post].
 
-Also - to avoid any pem certificate warning crap, disable the following config attribute:
+To avoid any pem certificate crap (that might cause compilation failure), disable the following config attribute:
 {% highlight bash %}
 <KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
 {% endhighlight %}
 
 
 3. Compile:
+
 Make sure the compilation machine contains at least 4 cores:
 {% highlight bash %}
 ncores
