@@ -1,5 +1,5 @@
 ---
-layout: default
+layout: post
 title:  "Linux Kernel Development Tips"
 date:   2022-09-06 19:59:43 +0300
 categories: jekyll update
