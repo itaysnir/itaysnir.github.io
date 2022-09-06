@@ -5,12 +5,14 @@ permalink: /about/
 ---
 Hello!
 
-My name is Itay Snir. My main interests are kernel development, system exploitation and vuln research.
-This site is my logger, so stuff will get very random. 
+I'm Itay, EE & Physics graduate from TAU, and currently doing my CS masters at the Technion. 
 
-You can find the source code for Minima at GitHub:
-[jekyll][jekyll-organization] /
-[minima](https://github.com/jekyll/minima)
+My main interests are kernel development, system exploitation and vuln research. 
+This site is basically a huge logger, documenting what i research on my free time. 
+
+You can find few of my projects at GitHub:
+[itaysnir][itaysnir-page] /
+[pwnable_kr](https://github.com/itaysnir/Learning)
 
 
-[jekyll-organization]: https://github.com/jekyll
+[itaysnir-page]: https://github.com/itaysnir
