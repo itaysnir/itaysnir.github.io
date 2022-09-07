@@ -7,7 +7,10 @@ categories: jekyll update
 
 # Clone your desired kernel tree
 
-Pretty straightforward, git clone <github-repo> <KDIR>
+Pretty straightforward:
+{% highlight bash %}
+git clone "github-repo" "KDIR"
+{% endhighlight %}
 
 
 # Create .config file
@@ -19,7 +22,16 @@ Instead, i sugget using:
 {% highlight bash %}
 make localmodconfig
 {% endhighlight %}
-Which configurates only the currently loaded modules, as stated by lsmod. 
+Which configurates only the currently loaded modules (on the host machine), as stated by lsmod. 
+
+It is possible to further reduce the amount of compiled modules, by issuing an lsmod at the VM, and saving this file:
+{% highlight bash %}
+target$ lsmod > /tmp/mylsmod
+target$ scp /tmp/mylsmod host:/tmp
+host$ make LSMOD=/tmp/mylsmod localmodconfig
+{% endhighlight %}
+
+(yes, i know many images dont contain scp by default. We will handle this soon, dont worry).
 
 Another good alternative, is using:
 {% highlight bash %}
@@ -33,26 +45,28 @@ To avoid any pem certificate crap (that might cause compilation failure), disabl
 {% endhighlight %}
 
 
+
 # Compile
 
-Make sure the compilation machine contains at least 4 cores:
+I suggest having at least 4 cores on your compilation machine:
 {% highlight bash %}
 ncores
 {% endhighlight %}
 
-To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with (ncores + 1) threads:
+To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with ncores + 1 threads:
 {% highlight bash %}
 # within <KDIR>:
 make ARCH=x86 -j 5
 sudo make -j 5 modules_install
 {% endhighlight %}
 
-Note - another compilation of the selected kernel modules is needed. 
+Note - a compilation of the selected kernel modules is needed. 
 
 Hooray! our lovely kernel now resides at the boot directory: 
 {% highlight bash %}
 <KDIR>/arch/x86/boot/bzImage
 {% endhighlight %}
+
 
 
 # Building file system image
