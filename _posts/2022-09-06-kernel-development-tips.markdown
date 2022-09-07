@@ -5,12 +5,15 @@ date:   2022-09-06 19:59:43 +0300
 categories: jekyll update
 ---
 
-1. Clone your desired kernel tree
+# Clone your desired kernel tree
+
+Pretty straightforward, git clone <github-repo> <KDIR>
 
 
-2. Create a .config file:
+# Create .config file
 
-Personally, i highly discourage using "make menuconfig". This method includes way too many useless drivers, significally increasing compilation time. 
+Personally, i highly discourage using "make menuconfig". 
+This method includes way too many useless drivers, and significally increases compilation time. 
 
 Instead, i sugget using:
 {% highlight bash %}
@@ -30,7 +33,7 @@ To avoid any pem certificate crap (that might cause compilation failure), disabl
 {% endhighlight %}
 
 
-3. Compile:
+# Compile
 
 Make sure the compilation machine contains at least 4 cores:
 {% highlight bash %}
@@ -39,7 +42,7 @@ ncores
 
 To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with (ncores + 1) threads:
 {% highlight bash %}
-# within <KDIR>
+# within <KDIR>:
 make ARCH=x86 -j 5
 sudo make -j 5 modules_install
 {% endhighlight %}
@@ -52,6 +55,6 @@ Hooray! our lovely kernel now resides at the boot directory:
 {% endhighlight %}
 
 
-4. Building file system image:
+# Building file system image
 
 [great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
