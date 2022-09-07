@@ -31,7 +31,7 @@ target$ scp /tmp/mylsmod host:/tmp
 host$ make LSMOD=/tmp/mylsmod localmodconfig
 {% endhighlight %}
 
-(yes, i know many images dont contain scp by default. We will handle this soon, dont worry).
+(yes, i know many images dont contain scp by default. We will handle this soon by integrating scp to our disk image, dont worry).
 
 Another good alternative, is using:
 {% highlight bash %}
@@ -39,7 +39,7 @@ make allnoconfig
 {% endhighlight %}
 And manually enable few of the desired modules, as stated [in this great post][great-post].
 
-To avoid any pem certificate crap (that might cause compilation failure), disable the following config attribute:
+To avoid any pem certificate crap compilation errors, disable the following config attribute:
 {% highlight bash %}
 <KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
 {% endhighlight %}
@@ -71,4 +71,18 @@ Hooray! our lovely kernel now resides at the boot directory:
 
 # Building file system image
 
+
+# And of course, practise!
+
+I hightly suggest the linux-kernel official labs for training:
+[linux teaching labs][linux-teaching-labs].
+
+These labs are aimed towards students who are familar with basics of operating systems. 
+If you have completed a basic OS course from university, or have familar knowledge about OS, this resource is for you. 
+
+When I will some spare time, i will post detailed solutions to these labs.
+
+Cya later!
+
 [great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
+[linux-teaching-labs]: https://linux-kernel-labs.github.io/refs/heads/master/labs/introduction.html
