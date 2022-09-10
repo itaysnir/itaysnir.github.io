@@ -5,7 +5,65 @@ date:   2022-09-06 19:59:43 +0300
 categories: jekyll update
 ---
 
-# Clone your desired kernel tree
+### IDE
+Vim + cscope.
+
+My .vimrc cscope config:
+```bash
+if has("cscope")
+        " Look for a 'cscope.out' file starting from the current directory,
+        " going up to the root directory.
+        let s:dirs = split(getcwd(), "/")
+        while s:dirs != []
+                let s:path = "/" . join(s:dirs, "/")
+                if (filereadable(s:path . "/cscope.out"))
+                        execute "cs add " . s:path . "/cscope.out " . s:path . " -v"
+                        break
+                endif
+                let s:dirs = s:dirs[:-2]
+        endwhile
+
+        set csto=0  " Use cscope first, then ctags
+        set cst     " Only search cscope
+        set csverb  " Make cs verbose
+    " To do the first type of search, hit 'CTRL-\' (]?), followed by one of the
+    " cscope search types above (s,g,c,t,e,f,i,d).  The result of your cscope
+    " search will be displayed in the current window.  You can use CTRL-T to
+    " go back to where you were before the search.
+    "
+        nmap <C-\>s :cs find s <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-\>g :cs find g <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-\>c :cs find c <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-\>t :cs find t <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-\>e :cs find e <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-\>f :cs find f <C-R>=expand("<cfile>")<CR><CR>
+        nmap <C-\>i :cs find i ^<C-R>=expand("<cfile>")<CR>$<CR>
+        nmap <C-\>d :cs find d <C-R>=expand("<cword>")<CR><CR>
+
+    " Using 'CTRL-spacebar' (intepreted as CTRL-@ by vim) then a search type
+    " makes the vim window split horizontally, with search result displayed in
+    " the new window.
+    "
+        nmap <C-@>s :vert scs find s <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-@>g :vert scs find g <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-@>c :vert scs find c <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-@>t :vert scs find t <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-@>e :vert scs find e <C-R>=expand("<cword>")<CR><CR>
+        nmap <C-@>f :vert scs find f <C-R>=expand("<cfile>")<CR><CR>
+        nmap <C-@>i :vert scs find i ^<C-R>=expand("<cfile>")<CR>$<CR>
+        nmap <C-@>d :vert scs find d <C-R>=expand("<cword>")<CR><CR>
+
+        nmap <F6> :cnext <CR>
+        nmap <F5> :cprev <CR>
+
+        " Open a quickfix window for the following queries.
+        set cscopequickfix=s-,c-,d-,i-,t-,e-,g-
+endif
+
+```
+
+
+### Clone your desired kernel tree
 
 Pretty straightforward:
 {% highlight bash %}
@@ -13,7 +71,7 @@ git clone "github-repo" "KDIR"
 {% endhighlight %}
 
 
-# Create .config file
+### Create .config file
 
 Personally, i highly discourage using "make menuconfig". 
 This method includes way too many useless drivers, and significally increases compilation time. 
@@ -46,7 +104,7 @@ To avoid any pem certificate crap compilation errors, disable the following conf
 
 
 
-# Compile
+### Compile
 
 I suggest having at least 4 cores on your compilation machine (simply issue `ncores` to check the cores count). 
 
@@ -70,7 +128,7 @@ It contains many debug symbols, and might be very usefull for debugging.
 
 
 
-# Building file system image
+### Building file system image
 
 ## QEMU
 One option is to use Yocto images. You can easily find pre-compiled images at: [yocto images][yocto-images] (choose .ext4 image).
@@ -82,9 +140,9 @@ The following command installs "jessie" debian image, with open-ssh (for ssh + s
 sudo debootstrap --include=openssh-server,build-essential jessie jessie_dir
 ```
 
-After the image was downloaded, you can tweak the filesystem as you wish. As said within this [great post][great-post], it will be convinient to disable the root password, as well as configuring a getty and network interface (his example code is good for me). 
+After the image has downloaded, you can tweak the filesystem as you wish. As said within this [great post][great-post], it will be convenient to disable root password, as well as configuring a getty and network interface (his example code is reccomended!). 
 
-In order to make an .ext4 image, that will be useable by qemu, run the following commands:
+In order to make an .ext4 image, run the following commands:
 ```bash
 dd if=/dev/zero of=jessie.img bs=1M seek=4095 count=1
 mkfs.ext4 -F jessie.img
@@ -108,7 +166,7 @@ qemu-system-"$ARCH" \
 ```
 
 Notes: 
-1. The file system device should be mounted with "rw", otherwise the .ext4 drive of our lovely VM's FS image is read-only!
+1. The file system device should be mounted with "rw", otherwise the .ext4 drive of our lovely VM's FS image will be read-only!
 
 2. Flag -m 1024 determines 1024 MB of RAM. Might be insufficient tho.
 
@@ -178,7 +236,7 @@ qemu-system-"$ARCH" \
 
 ## Real HW
 
-# And of course, practice!
+### And of course, practice!
 
 I hightly suggest the linux-kernel official labs for training:
 [linux teaching labs][linux-teaching-labs].
