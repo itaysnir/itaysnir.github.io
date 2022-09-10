@@ -5,17 +5,11 @@ date:   2022-09-06 19:59:43 +0300
 categories: jekyll update
 ---
 
+**Contents**
+* TOC
 {:toc}
-# {{ H1 }}
-## {{ H2 }} 
-### {{ H3 }}
-#### {{ H4 }}
-##### {{ H5 }}
-###### {{ H6 }}
+## IDE
 
-
-IDE
-======
 
 Vim + cscope.
 
@@ -74,8 +68,7 @@ endif
 ```
 
 
-Clone your desired kernel tree
-======
+## Clone your desired kernel tree
 
 
 Pretty straightforward:
@@ -84,8 +77,7 @@ git clone "github-repo" "KDIR"
 {% endhighlight %}
 
 
-Create .config file
-======
+## Create .config file
 
 
 Personally, i highly discourage using "make menuconfig". 
@@ -119,8 +111,7 @@ To avoid any pem certificate crap compilation errors, disable the following conf
 
 
 
-Compile
-======
+## Compile
 
 
 I suggest having at least 4 cores on your compilation machine (simply issue `ncores` to check the cores count). 
@@ -145,11 +136,10 @@ It contains many debug symbols, and might be very usefull for debugging.
 
 
 
-Building file system image
-======
+## Building file system image
 
 
-## QEMU
+### QEMU
 One option is to use Yocto images. You can easily find pre-compiled images at: [yocto images][yocto-images] (choose .ext4 image).
 
 However, i find working with debian images abit easier, as it is very easy to deploy packages (such as toolchains) into them. 
@@ -253,11 +243,10 @@ qemu-system-"$ARCH" \
 ```
 
 
-## Real HW
+### Real HW
 
 
-And of course, practice!
-======
+## And of course, practice!
 
 
 I hightly suggest the linux-kernel official labs for training:
