@@ -48,31 +48,137 @@ To avoid any pem certificate crap compilation errors, disable the following conf
 
 # Compile
 
-I suggest having at least 4 cores on your compilation machine:
-{% highlight bash %}
-ncores
-{% endhighlight %}
+I suggest having at least 4 cores on your compilation machine (simply issue `ncores` to check the cores count). 
 
-To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with ncores + 1 threads:
+To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with `ncores` + 1 threads:
 {% highlight bash %}
 # within <KDIR>:
-make ARCH=x86 -j 5
-sudo make -j 5 modules_install
+make ARCH=x86 -j $(ncores + 1)
 {% endhighlight %}
 
-Note - a compilation of the selected kernel modules is needed. 
+Note - a compilation of the selected kernel modules may also be needed. 
 
 Hooray! our lovely kernel now resides at the boot directory: 
 {% highlight bash %}
 <KDIR>/arch/x86/boot/bzImage
 {% endhighlight %}
 
+This binary is the same as the so-called `vmlinuz` file, which is the compressed kernel image.
+
+The uncompressed binary, `vmlinux`, resides within `<KDIR>`. 
+It contains many debug symbols, and might be very usefull for debugging. 
+
 
 
 # Building file system image
 
+## QEMU
+One option is to use Yocto images. You can easily find pre-compiled images at: [yocto images][yocto-images] (choose .ext4 image).
 
-# And of course, practise!
+However, i find working with debian images abit easier, as it is very easy to deploy packages (such as toolchains) into them. 
+An awesome tool for this is `debootstrap`, which downloads a desired debian image, with many options (such as adding packages). 
+The following command installs "jessie" debian image, with open-ssh (for ssh + scp) and build-essential (for gcc):
+```bash
+sudo debootstrap --include=openssh-server,build-essential jessie jessie_dir
+```
+
+After the image was downloaded, you can tweak the filesystem as you wish. As said within this [great post][great-post], it will be convinient to disable the root password, as well as configuring a getty and network interface (his example code is good for me). 
+
+In order to make an .ext4 image, that will be useable by qemu, run the following commands:
+```bash
+dd if=/dev/zero of=jessie.img bs=1M seek=4095 count=1
+mkfs.ext4 -F jessie.img
+sudo mkdir -p /mnt/jessie
+sudo mount -o loop jessie.img /mnt/jessie
+sudo cp -a jessie_dir/. /mnt/jessie/.
+sudo umount /mnt/jessie
+sudo rm -rf /mnt/jessie
+```
+
+And finally, execute Qemu:
+```bash
+qemu-system-"$ARCH" \
+    -kernel bzImage \
+    -drive file=jessie.ext4,if=virtio,format=raw \
+    -append "root=/dev/vda rw nokaslr" \
+    -m 1024 \
+    -s \
+    -net nic,model=virtio,macaddr=52:54:00:12:34:56 \
+    -net user,hostfwd=tcp:127.0.0.1:4444-:22
+```
+
+Notes: 
+1. The file system device should be mounted with "rw", otherwise the .ext4 drive of our lovely VM's FS image is read-only!
+
+2. Flag -m 1024 determines 1024 MB of RAM. Might be insufficient tho.
+
+3. Flag -s is crucial for gdb debugging. nokaslr also makes life easier. 
+
+4. It is possible to SSH the qemu-VM via host port 4444. 
+We can now easily transfer files, as we installed scp. 
+
+Full script that might be usefull:
+
+
+```bash
+#!/bin/bash
+
+set -euxo pipefail
+
+
+ARCH="x86_64"
+
+KDIR="$HOME/projects/maio_rfc"
+BZIMAGE="${KDIR}/arch/${ARCH}/boot/bzImage"
+DEBIAN_SUITE="jessie"
+DEBIAN_FS="${KDIR}/tools/itay/jessie"
+DEBIAN_IMG="${DEBIAN_FS}.img"
+MAIO_FILES="${KDIR}/tools/lib/maio"
+
+if [ $# -ge 1 ] && [ "$1" = "build-fs" ]; then
+        if [ ! -d ${DEBIAN_FS} ]; then
+                sudo mkdir -p ${DEBIAN_FS}
+                sudo debootstrap --include=openssh-server,build-essential \
+                        ${DEBIAN_SUITE} ${DEBIAN_FS}
+
+                sudo sed -i '/^root/ { s/:x:/::/ }' ${DEBIAN_FS}/etc/passwd
+                echo 'V0:23:respawn:/sbin/getty 115200 hvc0' | sudo tee -a ${DEBIAN_FS}/etc/inittab
+                printf '\nauto eth0\niface eth0 inet dhcp\n' | sudo tee -a ${DEBIAN_FS}/etc/network/interfaces
+                sudo rm -rf ${DEBIAN_FS}/root/.ssh/
+                sudo mkdir ${DEBIAN_FS}/root/.ssh/
+                cat ~/.ssh/id_?sa.pub | sudo tee ${DEBIAN_FS}/root/.ssh/authorized_keys
+
+                sudo cp -r ${MAIO_FILES} ${DEBIAN_FS}/root/
+        fi
+
+
+        dd if=/dev/zero of=${DEBIAN_IMG} bs=1M seek=4095 count=1
+        mkfs.ext4 -F ${DEBIAN_IMG}
+        sudo mkdir -p /mnt/jessie
+        sudo mount -o loop ${DEBIAN_IMG} /mnt/jessie
+        sudo cp -a ${DEBIAN_FS}/. /mnt/jessie/.
+        sudo umount /mnt/jessie
+        sudo rm -rf /mnt/jessie
+fi
+
+#       -nographic \
+#       -append "root=/dev/vda loglevel=15 console=hvc0 nokaslr" \
+
+qemu-system-"$ARCH" \
+        -kernel ${BZIMAGE} \
+        -drive file=${DEBIAN_IMG},if=virtio,format=raw \
+        -append "root=/dev/vda rw nokaslr" \
+        -m 1024 \
+        -s \
+        -net nic,model=virtio,macaddr=52:54:00:12:34:56 \
+        -net user,hostfwd=tcp:127.0.0.1:4444-:22
+
+```
+
+
+## Real HW
+
+# And of course, practice!
 
 I hightly suggest the linux-kernel official labs for training:
 [linux teaching labs][linux-teaching-labs].
@@ -80,9 +186,10 @@ I hightly suggest the linux-kernel official labs for training:
 These labs are aimed towards students who are familar with basics of operating systems. 
 If you have completed a basic OS course from university, or have familar knowledge about OS, this resource is for you. 
 
-When I will some spare time, i will post detailed solutions to these labs.
+When I will have some spare time, i will post detailed solutions to these labs.
 
 Cya later!
 
 [great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
 [linux-teaching-labs]: https://linux-kernel-labs.github.io/refs/heads/master/labs/introduction.html
+[yocto-images]: https://downloads.yoctoproject.org/releases/yocto/yocto-2.3/machines/qemu/qemux86-64/
