@@ -81,7 +81,7 @@ git clone "github-repo" "KDIR"
 
 
 Personally, i highly discourage using "make menuconfig". 
-This method includes way too many useless drivers, and significally increases compilation time. 
+This method is manual, and by default includes way too many useless drivers, as well as significally increases compilation time. 
 
 Instead, i sugget using:
 {% highlight bash %}
@@ -132,7 +132,7 @@ Hooray! our lovely kernel now resides at the boot directory:
 This binary is the same as the so-called `vmlinuz` file, which is the compressed kernel image.
 
 The uncompressed binary, `vmlinux`, resides within `<KDIR>`. 
-It contains many debug symbols, and might be very usefull for debugging. 
+It contains many debug symbols, and might be very useful for debugging. 
 
 
 
@@ -184,7 +184,7 @@ Notes:
 4. It is possible to SSH the qemu-VM via host port 4444. 
 We can now easily transfer files, as we installed scp. 
 
-Full script that might be usefull:
+Full script that might be useful:
 
 
 ```bash
