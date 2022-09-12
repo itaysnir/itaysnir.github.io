@@ -41,13 +41,14 @@ readv(file_fd, iovecs, count); // Read from the file into the allocated buffers
 ```
 
 We can think of it this way - each of the `struct iovec` represents a different size "bucket". 
-Upon read, the first "bucket" (iovec[0]) is being filled, up to its size- given by iovec[0].iov_len. 
+Upon read, the first "bucket" (`iovec[0]`) is being filled, up to its size- given by `iovec[0].iov_len`. 
 Only after the first bucked was completely filled, the second bucket is being filled, and so on. 
 
 While this sequential IO is very easy to grasp, for multithreaded applications it might be problematic. 
 
 ### preadv(), pwritev()
 Another interesting syscall is `preadv()`. This is a combination of `readv()` and `pread`. 
+
 Recall - `pread` syscall takes an additional `offset` parameter, Which is especially useful for multithreaded programs. How exactly this extra parameter allows MT?
 By diving into the inner implementation of file descriptors in linux, we can see the following:
 ```c
@@ -72,7 +73,20 @@ Therefore, if multiple threads issue `read()` calls simultaneously, the `f_pos` 
 `pread()`, on the other hand, allows multiple threads to read from the same fd, without being affected by the `f_pos` changes being made by other threads. 
 
 As a side note - even more sophisticated schemes exists, such as `gread()` for [GPU-fs][GPU-fs]. Internally, it utilizes `pread()` calls. 
-This, however, outside of the scope of this post. 
+This, however, outside the scope of this post. 
+
+
+## io_uring Basics
+The name stands for "IO User Ring". It allows to perform Async IO (non-blocking), with extremely low syscall overhead. 
+
+Each user (process) is assigned with two dedicated ring buffers - SQ (submission queue), and CQ (completion queue). 
+These buffers are shared between user and kernel memory. 
+
+The SQ contains entries, SQEs, that represents requests. Each request is a R or W operation. These operations might also be *vectorized operations*, via the `readv`, `writev` syscall API. 
+
+The CQ contains CQEs as its entries - representing the result of a completed request. 
+
+For each SQE, there is exactly one CQE. 
 
 ## Installing liburing
 Luckily, the authors of io_uring also created a user - libary, `liburing.h`. 
@@ -87,6 +101,7 @@ make install
 This will download and compile liburing. 
 Now `liburing.so` is symlinked towards `/usr/lib`, and can be used for your C programs :)
 
+## Using liburing
 
 ## Awesome resources
 1. [io uring examples][io-uring-examples]
