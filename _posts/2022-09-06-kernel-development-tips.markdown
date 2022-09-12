@@ -149,7 +149,7 @@ The following command installs "jessie" debian image, with open-ssh (for ssh + s
 sudo debootstrap --include=openssh-server,build-essential jessie jessie_dir
 ```
 
-After the image has downloaded, you can tweak the filesystem as you wish. As said within this [great post][great-post], it will be convenient to disable root password, as well as configuring a getty and network interface (his example code is reccomended!). 
+After the image has downloaded, you can tweak the filesystem as you wish. As said within this [great post][great-post], it will be convenient to disable root password, as well as configuring a getty and network interface (his example code is recommended!). 
 
 In order to make an .ext4 image, run the following commands:
 ```bash
@@ -245,6 +245,22 @@ qemu-system-"$ARCH" \
 
 ### Real HW
 
+After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` path. 
+Create a dedicated `initrd` image, via:
+```bash
+mkinitramfs -o /boot/initrd-<VERSION> <VERSION>
+```
+
+Note: <VERSION> holds for the *full* linux kernel version, for example: `5.4.0-117`
+
+It is also recommended to store `System.map-<VERSION>` and `config-<VERSION>` under `/boot`. 
+
+
+Finally, update the grub configuration, and reboot (to be on the safe side, set the new kernel only for the next boot):
+```bash
+sudo update-grub
+sudo grub-reboot <VERSION_NAME> && reboot
+```
 
 ## And of course, practice!
 
