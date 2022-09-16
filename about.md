@@ -3,12 +3,13 @@ layout: page
 title: About
 permalink: /about/
 ---
-Hello!
+Ahoy!
 
-I'm Itay, EE & Physics graduate from TAU, and currently doing my CS masters at the Technion. 
+I'm Itay, EE & Physics graduate from TAU, currently doing my CS masters at the Technion. 
+My research area is operating systems internals, focusing on efficient & secure DMA methods.
 
-My main interests are kernel development, system exploitation and vuln research. 
-This site is basically my logger, documenting what i research on my free time. 
+On my free time i do system exploitation and vuln research. 
+This site is my logger, documenting what i research on my free time. 
 
 You can find few of my projects at GitHub:
 [itaysnir][itaysnir-page] /
