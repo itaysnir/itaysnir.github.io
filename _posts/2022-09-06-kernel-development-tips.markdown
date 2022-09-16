@@ -85,6 +85,7 @@ This method is manual, and by default includes way too many useless drivers, as 
 
 Instead, i sugget using:
 {% highlight bash %}
+make mrproper  # revert any made changes
 make localmodconfig
 {% endhighlight %}
 Which configurates only the currently loaded modules (on the host machine), as stated by lsmod. 
@@ -113,27 +114,50 @@ To avoid any pem certificate crap compilation errors, disable the following conf
 
 ## Compile
 
+Since we're gonna create our custom kernel and tweak it, I highly suggest giving an indicative name for it.
+
+Open the kernel's `Makefile`, and under the `EXTRAVERSION` attribute, add your dedicated kernel name:
+```bash
+# SPDX-License-Identifier: GPL-2.0
+VERSION = 5
+PATCHLEVEL = 4
+SUBLEVEL = 0
+EXTRAVERSION = maio
+NAME = Kleptomaniac Octopus
+```
+
 
 I suggest having at least 4 cores on your compilation machine (simply issue `ncores` to check the cores count). 
 
 To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with `ncores` + 1 threads:
-{% highlight bash %}
+```bash
 # within <KDIR>:
 make ARCH=x86 -j $(ncores + 1)
-{% endhighlight %}
-
-Note - a compilation of the selected kernel modules may also be needed. 
+```
 
 Hooray! our lovely kernel now resides at the boot directory: 
-{% highlight bash %}
+```bash
 <KDIR>/arch/x86/boot/bzImage
-{% endhighlight %}
+```
 
 This binary is the same as the so-called `vmlinuz` file, which is the compressed kernel image.
 
 The uncompressed binary, `vmlinux`, resides within `<KDIR>`. 
 It contains many debug symbols, and might be very useful for debugging. 
 
+
+Afterwards, compile the selected kernel modules:
+```bash
+make modules_install
+```
+This will add the compiled modules towards `/lib/modules/<KVER>`. 
+Note that in case `KVER` already exists, the existing modules will be overriden. 
+
+Lastly, issue the following command to create an initrd.img, and to set the grub bootloader configuration: 
+```bash
+make install
+```
+Note: it does NOT set the newly created kernel as the default boot OS, only adds it as an another boot option.
 
 
 ## Building file system image
@@ -300,6 +324,12 @@ Finally, update the grub configuration, and reboot (to be on the safe side, set 
 sudo update-grub
 sudo grub-reboot <VERSION_NAME> && reboot
 ```
+
+If you would like to find matching grub menuentry for your newly-compiled kernel, run:
+```bash
+grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "$1, $2, $3, $4, $5, $6, $7}'
+```
+
 
 ## And of course, practice!
 
