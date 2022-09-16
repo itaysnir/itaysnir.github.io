@@ -245,7 +245,8 @@ qemu-system-"$ARCH" \
 
 ### Real HW
 
-After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` path.
+After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` directory.
+
 For example, the following code snippet compiles my project's adjusted kernel
 (It is also recommended to store `System.map-<VERSION>` and `config-<VERSION>` under `/boot`):
 ```bash
@@ -303,7 +304,7 @@ sudo grub-reboot <VERSION_NAME> && reboot
 ## And of course, practice!
 
 
-I hightly suggest the linux-kernel official labs for training:
+I highly suggest the linux-kernel official labs for training:
 [linux teaching labs][linux-teaching-labs].
 
 These labs are aimed towards students who are familar with basics of operating systems. 
