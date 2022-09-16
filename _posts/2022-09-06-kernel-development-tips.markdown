@@ -245,15 +245,53 @@ qemu-system-"$ARCH" \
 
 ### Real HW
 
-After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` path. 
-Create a dedicated `initrd` image, via:
+After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` path.
+For example, the following code snippet compiles my project's adjusted kernel
+(It is also recommended to store `System.map-<VERSION>` and `config-<VERSION>` under `/boot`):
 ```bash
-mkinitramfs -o /boot/initrd-<VERSION> <VERSION>
+#!/bin/bash
+
+set -exuo pipefail
+
+
+# Configure these, if needed
+KDIR="/homes/itaysnir/projects/maio/maio_rfc"
+ARCH="x86"
+KNAME="5.4.0-maio"
+
+# Helper constants, do not change
+_SYSTEM_MAP="System.map"
+
+
+sudo -i
+cd ${KDIR}
+make ARCH=${ARCH} -j $(ncpus + 1)
+
+cp ${_SYSTEM_MAP} /boot/${_SYSTEM_MAP}-${KNAME}
+cp arch/${ARCH}/boot/bzImage /boot/vmlinuz-${KNAME}
+cp .config /boot/config-${KNAME}
 ```
 
-Note: <VERSION> holds for the *full* linux kernel version, for example: `5.4.0-117`
+Create a dedicated `initrd` image (need to run this only once):
+```bash
+#!/bin/bash
 
-It is also recommended to store `System.map-<VERSION>` and `config-<VERSION>` under `/boot`. 
+set -exuo pipefail
+
+
+# Configure these, if needed
+KDIR="/homes/itaysnir/projects/maio/maio_rfc"
+ARCH="x86"
+KVER="5.4.0"
+KVER_MINOR="117-generic"
+KNAME="${KVER}-maio"
+
+INITRD="/boot/initrd.img"
+
+mkinitramfs -o ${INITRD}-${KNAME} ${KVER}-${KVER_MINOR}
+```
+
+Note: we must specify the *full* linux kernel version, for example: `5.4.0-117`
 
 
 Finally, update the grub configuration, and reboot (to be on the safe side, set the new kernel only for the next boot):
