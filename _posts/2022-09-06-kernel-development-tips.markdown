@@ -285,13 +285,16 @@ sudo -i
 cd ${KDIR}
 
 make ARCH=${ARCH} -j $(( $(ncpus) + 1 ))
+make modules
 make modules_install
 make install
 ```
 
 Note: `make modules_install` creates the required modules under `/lib/modules/<KVER>`.
+
 `make install` creates an initrd image under the `/boot` directory, and saves the generated `.config` file and `System.map` file under `/boot`.
-Finally, it updates the `grub` configuration (yet doesn't set our new kernel as the default boot option). 
+
+Finally, it updates the `grub` configuration (However - it doesn't set our new kernel as the default boot option). 
 
 
 Grub configuration update & set booting kernel (only for the next time):
