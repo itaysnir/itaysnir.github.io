@@ -127,12 +127,12 @@ NAME = Kleptomaniac Octopus
 ```
 
 
-I suggest having at least 4 cores on your compilation machine (simply issue `ncores` to check the cores count). 
+I suggest having at least 4 cores on your compilation machine (simply issue `ncpus` to check the cores count). 
 
-To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with `ncores` + 1 threads:
+To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with `ncpus` + 1 threads:
 ```bash
 # within <KDIR>:
-make ARCH=x86 -j $(ncores + 1)
+make ARCH=x86 -j $(( $(ncpus) + 1 ))
 ```
 
 Hooray! our lovely kernel now resides at the boot directory: 
@@ -269,10 +269,7 @@ qemu-system-"$ARCH" \
 
 ### Real HW
 
-After compiling the kernel, rename `bzImage` to `vmlinuz-<VERSION>`, and store it under the `/boot` directory.
-
-For example, the following code snippet compiles my project's adjusted kernel
-(It is also recommended to store `System.map-<VERSION>` and `config-<VERSION>` under `/boot`):
+The following code snippet compiles and sets my project's adjusted kernel:
 ```bash
 #!/bin/bash
 
@@ -282,50 +279,28 @@ set -exuo pipefail
 # Configure these, if needed
 KDIR="/homes/itaysnir/projects/maio/maio_rfc"
 ARCH="x86"
-KNAME="5.4.0-maio"
-
-# Helper constants, do not change
-_SYSTEM_MAP="System.map"
 
 
 sudo -i
 cd ${KDIR}
-make ARCH=${ARCH} -j $(ncpus + 1)
 
-cp ${_SYSTEM_MAP} /boot/${_SYSTEM_MAP}-${KNAME}
-cp arch/${ARCH}/boot/bzImage /boot/vmlinuz-${KNAME}
-cp .config /boot/config-${KNAME}
+make ARCH=${ARCH} -j $(( $(ncpus + 1) ))
+make modules_install
+make install
 ```
 
-Create a dedicated `initrd` image (need to run this only once):
-```bash
-#!/bin/bash
-
-set -exuo pipefail
+Note: `make modules_install` creates the required modules under `/lib/modules/<KVER>`.
+`make install` creates an initrd image under the `/boot` directory, and saves the generated `.config` file and `System.map` file under `/boot`.
+Finally, it updates the `grub` configuration (yet doesn't set our new kernel as the default boot option). 
 
 
-# Configure these, if needed
-KDIR="/homes/itaysnir/projects/maio/maio_rfc"
-ARCH="x86"
-KVER="5.4.0"
-KVER_MINOR="117-generic"
-KNAME="${KVER}-maio"
-
-INITRD="/boot/initrd.img"
-
-mkinitramfs -o ${INITRD}-${KNAME} ${KVER}-${KVER_MINOR}
-```
-
-Note: we must specify the *full* linux kernel version, for example: `5.4.0-117`
-
-
-Finally, update the grub configuration, and reboot (to be on the safe side, set the new kernel only for the next boot):
+Grub configuration update & set booting kernel (only for the next time):
 ```bash
 sudo update-grub
 sudo grub-reboot <VERSION_NAME> && reboot
 ```
 
-If you would like to find matching grub menuentry for your newly-compiled kernel, run:
+Print grub menuentries for all compiled kernels:
 ```bash
 grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "$1, $2, $3, $4, $5, $6, $7}'
 ```
