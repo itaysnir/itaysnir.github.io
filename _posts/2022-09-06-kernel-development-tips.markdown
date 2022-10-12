@@ -284,8 +284,9 @@ ARCH="x86"
 sudo -i
 cd ${KDIR}
 
+make olddefconfig
+make modules -j $(( $(ncpus) + 1 ))
 make ARCH=${ARCH} -j $(( $(ncpus) + 1 ))
-make modules
 make modules_install
 make install
 ```
