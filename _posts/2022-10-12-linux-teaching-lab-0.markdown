@@ -55,7 +55,7 @@ Note: `--nx` is used for vanilla gdb invocation.
 
 In order to generate a stack trace, add `dump_stack()` call in your wanted code section. 
 
-## Adding virtual disk image
+## Exercise - Adding virtual disk image
 
 Download an extra disk image:
 `wget http://elf.cs.pub.ro/so2/res/laboratoare/mydisk.img`
@@ -77,7 +77,7 @@ Since the kernel wasn't configured to support BTRFS filesystems, we can easily t
 Recompile the kernel to apply changes.
 Now mounting should be done successfully.
 
-## Remote GDB Debugging
+## Exercise - Remote GDB Debugging
 Qemu allows to open a gdbserver on the emulated machine, by 
 specifing the flag `-gdb protocol::port`.
 Alternatively, `-s` will listen on tcp port 1234. 
@@ -99,5 +99,19 @@ Indeed, the breakpoint was hit, and the following backtrace is generated:
 #2  do_int80_syscall_32 (regs=0xce99bfb4) at arch/x86/entry/common.c:94
 #3  0xc172bccb in entry_INT80_32 () at arch/x86/entry/entry_32.S:1059
 ```
+
+To display the content and address of the `jiffies` variable, issue `x/gx &jiffies`
+
+## Exercise - Cscope
+In order to generate cscope index, navigate to the kernel source tree and issue `make cscope`. 
+
+To search for a symbol, issue `:cs f g <SYMBOL>`
+Another option is landing the cursor on our desired symbol name, and issue `CTRL + \ + g` to find it. 
+
+To swap between the recent search and previous one, issue `CTRL + o` or `CTRL + i`. 
+
+It is highly recommended to create a macro for `:copen` and `:cclose`. 
+
+To exit all windows at once, issue `:wqa`
 
 [linux-teaching-labs]: https://github.com/linux-kernel-labs/linux
