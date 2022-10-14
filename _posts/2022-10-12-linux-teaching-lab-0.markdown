@@ -73,5 +73,31 @@ mkdir -p /meow
 mount /dev/vdd /meow
 ```
 
+Since the kernel wasn't configured to support BTRFS filesystems, we can easily twick it via `make menuconfig` (add Btrfs as a builtin within the kernel). 
+Recompile the kernel to apply changes.
+Now mounting should be done successfully.
+
+## Remote GDB Debugging
+Qemu allows to open a gdbserver on the emulated machine, by 
+specifing the flag `-gdb protocol::port`.
+Alternatively, `-s` will listen on tcp port 1234. 
+
+As an example of dynamic debugging, we want to hook the handler of the sys_access syscall. 
+
+We can find its address by searching the generated symbols file of the kernel, `System.map`:
+`cat System.map | grep -i sys_access`
+Its resulting address is `0xc11a9c70`. 
+
+Now we can hook this address via gdb, and issue `ls` command on the VM. Since the `access` syscall retrives the user's permissions for a given file, eventually it will be called when we issue `ls`. 
+
+Indeed, the breakpoint was hit, and the following backtrace is generated:
+```bash
+(gdb) bt
+#0  __ia32_sys_access (regs=0xce99bfb4) at fs/open.c:482
+#1  0xc171e86c in do_syscall_32_irqs_on (nr=<optimized out>, regs=0xce99bfb4)
+    at arch/x86/entry/common.c:77
+#2  do_int80_syscall_32 (regs=0xce99bfb4) at arch/x86/entry/common.c:94
+#3  0xc172bccb in entry_INT80_32 () at arch/x86/entry/entry_32.S:1059
+```
 
 [linux-teaching-labs]: https://github.com/linux-kernel-labs/linux
