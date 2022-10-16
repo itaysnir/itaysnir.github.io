@@ -60,4 +60,66 @@ These messages are recorded comperhensively under `/var/log/syslog`, as well as 
 Note - it is stored at a specially reserved memory area for logging. It is then extracted via a dedicated logging daemon, `syslog`. 
 
 
+## Static Kernel Debugging
+1. `dmesg` is a friend. use it. 
+Most of the time, wer'e interested on the first generated oops, and its code (R / W oops). The generated message contains the stack content, backtrace, and the `IP` value, at which the oops have occured.
+
+2. We can easily parse the instruction which generated the oops, by using `objdump -dSl` (both source code and assembly display). 
+The trick is to find the VMA (runtime address, as opposed to load address, LMA) of the kernel module, via: `cat /proc/modules`. 
+Then, easy parsing of the kernel module as follow:
+```bash
+objdump -dS --adjust-vma=<module_start_from_procfs> <module.ko>
+```
+
+3. Using `addr2line`: this binary takes a kernel object file, and offset which generated the oops. It returns the equivalent source-code line. 
+
+4. Interact with serial port via `minicom` (similar to `screen`). 
+- For real embedded hardware, it is common to use `/dev/ttyS0`. Another option is to use `/dev/ttyUSB`. 
+- For lab VM, a `/dev/pts/X` entry is generated. We can connect this virtual serial port via `minicom -D /dev/pts/X`.
+
+5. Logging kernel messages over the network via the kernel module `netconsole`. 
+Useful if there are no serial ports available / disk doesnt work / terminal doesnt respond. 
+Example config (`debugged_machine`, `debugger_machine`):
+```bash
+modprobe netconsole netconsole=6666@192.168.191.130/eth0,6000@192.168.191.1/00:50:56:c0:00:08
+```
+
+So the host machine can display messages via:
+`nc -ulp 6000`
+
+Or via `syslogd`. 
+
+6. Most useful - `printk`. 
+It also takes a log level macro, which may be found under `linux/kern_levels.h`. This allows routing the messages to different outputs. 
+
+```bash
+KERN_EMERG = 0
+...
+KERN_DEBUG = 7
+```
+
+In order to display `printk` messages in userspace, its log level must be higher than `console_loglevel`. 
+Therefore, the following will enable all messages to be shown at userspace:
+`echo 8 > /proc/sys/kernel/printk`
+
+The log files under `/var/log` keep its information between system restarts. 
+These files are populated by `syslogd` and `klogd` - kernel daemons. 
+If both of these daemons are enabled, all incoming kernel messages will be routed towards `/var/log/kern.log`. 
+
+A simple alternative is the `/var/log/debug` file, which is populated only due to printk messages, stated with `KERN_DEBUG` log level. 
+
+The following macro may become handy to use:
+```c
+#define PRINT_DEBUG \
+       printk (KERN_DEBUG "[% s]: FUNC:% s: LINE:% d \ n", __FILE__,
+               __FUNCTION__, __LINE__)
+```
+
+To delete previous log messages:
+`cat /dev/null > /var/log/debug`
+
+
+## Dynamic Kernel Debugging
+
+
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
