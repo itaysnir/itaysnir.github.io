@@ -120,6 +120,37 @@ To delete previous log messages:
 
 
 ## Dynamic Kernel Debugging
+### dyndbg
+The following [link][dyndbg-link] contains the documentation.
+It is possible to use [debugfs][debugfs] to configure debug options. 
+```bash
+mount -t debugfs none /debug
+cat /debug/dynamic_debug/control  # display existing message filters
+echo 'file svcsock.c line 1603-1605 +p' > /debug/dynamic_debug/control  # enable message from source file, for specific lines
+echo 'func svc_tcp_accept +p' > /debug/dynamic_debug/control  # messages from specific functions
+
+Flags:
++p  # actviates pr_debug()
++f  # includes func name
++l  # includes line number
++m  # includes module name
++t  # includes thread id
+```
+
+### KDB
+Performs live debugging and monitoring. Can be used in parallel with GDB.
+Activate GDB over serial port:
+```bash
+echo hvc0 > /sys/module/kgdboc/parameters/kgdboc
+
+echo g > /proc/sysrq-trigger  # force the kernel to enter KDB, or ctrl+O g in the terminal
+```
+KDB allows printing backtraces, dump trace logs, inserting hardware breakpoints, and modifying memory. See `help` within KDB shell. 
+```bash
+bph my_var dataw  # HW-bp on write access to my_var
+```
 
 
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
+[dyndbg-link]: https://www.kernel.org/doc/html/v4.15/admin-guide/dynamic-debug-howto.html
+[debugfs]: https://www.opensourceforu.com/2010/10/debugging-linux-kernel-with-debugfs/
