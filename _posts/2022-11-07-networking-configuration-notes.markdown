@@ -8,6 +8,25 @@ categories: jekyll update
 **Contents**
 * TOC
 {:toc}
+## Modern Core Linux Performance Paper
+
+
+The following [cool paper][cool-paper] describes various mechanisms that were added or altered within the linux kernel for the last 7 years.
+It explains the main causes of slowdowns and overheads made by these new mechanisms - which dramatically impact networking performace. 
+
+According to the paper, some of the kernel configurations that can be easily altered:
+```bash
+CONFIG_PAGE_TABLE_ISOLATION=""           # Kernel page-table isolation (Meltdown patch)
+CONFIG_RETPOLINE=""                      # Avoid indirect branch speculation (Spectre patch)
+CONFIG_SLAB_FREELIST_RANDOM=""           # SLAB freelist randomization
+CONFIG_HARDENED_USERCOPY=""              # Hardened usercopy
+CONFIG_MEMCG=""                          # Control group memory controller
+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y     # Disabling transparent huge pages
+CONFIG_USERFAULTFD=""                    # Userspace page fault handling
+CONFIG_CONTEXT_TRACKING_FORCE=""         # Forced context tracking
+```
+
+
 ## Kernel Command Line
 
 
@@ -21,3 +40,5 @@ GRUB_CMDLINE_LINUX="noibrs noibpb mds=off tsx_async_abort=off nx_huge_pages=off 
 
 Afterwards, issue `update-grub`, and reboot the configured kernel. 
 Finally, read `/proc/cmdline` to verify the configuration have completed succesfully. 
+
+[cool-paper]: https://dl.acm.org/doi/10.1145/3341301.3359640
