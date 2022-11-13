@@ -76,18 +76,24 @@ print_dynamic_symbol (Filedata *filedata, unsigned long si,
 
 ### Code Review
 
-1. A printf("%-7s") is being called. This format specifier meaning is *left* align the output string (due to "-") for up to 7 bytes. 
+1. `printf("%-7s")` is being called. 
+This format specifier meaning is *left* align of the output string (due to "-") for up to 7 bytes. 
+
 In a similar manner, "%+7s" would perform *right* alignment of 7 bytes. We can think of the "-" as negative alignment. 
 
 Cool side notes - 
+
 Advanced usage of format specifiers includes the dot operation - `"%24.6s"`, which states *precision* (For strings: truncs the string after 6 bytes, not including the null byte. For integers: number of digits). 
-As well as the asterisk operation - `"%*d"`, which takes the alignment value as an extra format specifier (which can be supplied during runtime). 
+
+Asterisk operation - `"%*d"`, which takes the alignment value as an extra format specifier (which can be supplied during runtime). 
+
 Finally, the dollar operation - `"%2$d"`, states the order of the formatted value (like `'{2}:{1}'.format(last, first)` within python).
 
 2. Buffer overflow due to `sprintf()` usage: 
-```c
-char buffer[256];
 
+```c
+
+char buffer[256];
 len_avail -= sprintf (buffer, "@%s", version_string);
 
 ```
@@ -97,12 +103,15 @@ We can fully control `version_string`, hence overflowing the 256-byte array `buf
 ### Patch
 
 The following patch was made:
+
 ```c
+
 -      char buffer[256];
 +      char buffer[16];
  
 -      len_avail -= sprintf (buffer, "@%s", version_string);
 +      len_avail -= 1 + strlen (version_string);
+
 ```
 
 So instead of counting the written bytes into the buffer, a call for `strlen()` is being made (also taking into account the null byte). 
@@ -484,6 +493,7 @@ image_load_bmp(image_t *img,     /* I - Image to load into */
 ```
 
 ### Code Review
+
 1. `fread` stack buffer overflow:
 
 ```c
