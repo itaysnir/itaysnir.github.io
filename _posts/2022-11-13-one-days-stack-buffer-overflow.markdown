@@ -84,12 +84,14 @@ Advanced usage of format specifiers includes the dot operation - `"%24.6s"`, whi
 As well as the asterisk operation - `"%*d"`, which takes the alignment value as an extra format specifier (which can be supplied during runtime). 
 Finally, the dollar operation - `"%2$d"`, states the order of the formatted value (like `'{2}:{1}'.format(last, first)` within python).
 
-2. Buffer overflow due to `sprintf()` usage : 
+2. Buffer overflow due to `sprintf()` usage: 
 ```c
 char buffer[256];
 
 len_avail -= sprintf (buffer, "@%s", version_string);
+
 ```
+
 We can fully control `version_string`, hence overflowing the 256-byte array `buffer`. 
 
 ### Patch
@@ -483,11 +485,13 @@ image_load_bmp(image_t *img,     /* I - Image to load into */
 
 ### Code Review
 1. `fread` stack buffer overflow:
+
 ```c
 if (colors_used == 0 && depth <= 8)
     colors_used = 1 << depth;
 
 fread(colormap, (size_t)colors_used, 4, fp);
+
 ```
 
 The array is defined as `char colormap[256][4]` (1024 bytes long), and we fully control `int depth`. 
@@ -498,11 +502,14 @@ Therefore, if we set its value to negative value, the check will pass, while set
 For example, by setting `depth == -22`, we would achieve `colors_used = 0x400`, hence creating a buffer overflow of (0x400 * 4  - 1024) bytes.
 
 2. `img->pixels` heap buffer overflow:
+
 ```c
 img->pixels = (uchar *)malloc((size_t)(img->width * img->height * img->depth));
   if (img->pixels == NULL)
     return (-1);
+
 ```
+
 Since we control the `img` parameters, we may set one of these as `0`. 
 The result of `malloc(0)` is unspecified, and usually *returns a pointer to length 0 buffer, instead of NULL* . 
 The assignment is performed via the `ptr` variable. 
