@@ -10,6 +10,8 @@ categories: jekyll update
 {:toc}
 ## CVE-2021-20294 - readelf
 
+### Code
+
 ```c
 ////ACID: filedata, symtab, section, strtab, strtab_size
 static void
@@ -122,6 +124,8 @@ In case we fully control `version_string`, we may do a trick and perform integer
 
 
 ## CVE-2021-43579 - HTMLDOC
+
+### Code
 
 ```c
 ////ACID: everything read from fp
@@ -543,3 +547,107 @@ The second reason - `color_used` is defined as an `int` (instead of `uint`), and
 
 ## CVE-Unknown-SSBB-BH2021🇰🇷 - Exynos Baseband
 
+### Code
+
+```c
+
+char ** find_tag_end(char **result) {
+	char *i;
+	unsigned int v2;
+	unsigned int cur_char;
+	for (i = *result ; ; ++i) {
+		cur_char = (unsigned __int8)*i;
+		if (cur_char <= 0xD && ((1 << cur_char) & 0x2601) != 0) // \0 \t \n \r
+			break;
+		v2 = cur_char - 32;
+		if (v2 <= 0x1F && ((1 << v2) & (unsigned int)&unk_C0008001) != 0) // space / > ?
+			break;
+	}
+	*result = i;
+	return result;
+}
+
+int IMSPL_XmlGetNextTagName(char *src, char *dst){
+	char * ptr = src;
+	// The cut code will:
+	// 1. Skip space characters
+	// 2. Find the beginning mark '<'
+	// 3. Skip comments
+	// ...
+	char * v8 = ptr + 1;
+	char ** v13;
+	v13[0] = v8;
+	find_tag_end((char **)v13);
+	v9 = v13[0];
+	if (v8 != v13[0]) {
+		memcpy(dst, (int *) ((char *)ptr + 1), v13[0] - v8);
+		dst[v9 - v8] = 0;
+		V12 = 10601;
+		// IMSPL_XmiGetNextTagName: Tag name
+		v11 = &log_struct_437f227c;
+		Logs((int *)&v11, (int)dst, -1, -20071784);
+		* (unsigned __int8 **)src = v13[0];
+		LOBYTE(result) = 1;
+		return (unsigned __int8) result;
+	}
+	// ...
+}
+int IMSPL_XmlParser_ContactLstDecode(int *a1, int *a2) {
+	unsigned __int8 *v4;
+	int v5;
+	log_info_s *v7;
+	int v8;
+	unsigned __int8 *v9;
+	int v10;
+	char v11[136];
+
+	bzero(v11, 100);
+	v10 = 0;
+	v4 = (unsigned __int8 *)*a1;
+	v8 = 10597;
+	v9 = v4;
+	// ----------%s----------
+	v7 = &log_struct_4380937c;
+	log_0x418ffa6c(&v7, "IMSPL_XmlParser_ContactLstDecode", -20071784) ;
+	if (IMSPL_XmlGetNextTagName((char *)&v9, v11) ! = 1) {
+	LABEL_8:
+		*a1 = (int)v9;
+		v8 = 10597;
+		// Function END
+		v7 = &log_struct_43809448;
+		log_0x418ffa6c(&v7, -20071784) ;
+		return 1;
+	}
+// ...
+}
+```
+
+### Code Review
+
+1. `bzero` only zeros out the first 100 bytes of the array `v11`, instead of all of its 136 bytes.
+
+2. Stack buffer overflow: 
+
+Right after the comments of `IMSPL_XmlGetNextTagName`, `ptr` points towards the first `'<'`, and `v13` towards the tag inner content.
+
+After those variables are set, `find_tag_end` is called - to find the corresponding `'>'`. It updates the result within `v13[0]`. 
+
+```c
+	find_tag_end((char **)v13);
+	v9 = v13[0];
+	if (v8 != v13[0]) {
+		memcpy(dst, (int *) ((char *)ptr + 1), v13[0] - v8);
+		dst[v9 - v8] = 0;
+```
+
+Over controlled input - we control the value of `v13[0]`, as we may enter a very long tag name: `<AAAAA...A>`. 
+In such case, the length of the copied buffer (`v13[0] - v8`) is controlled, while the `dst` buffer size is constant 136 bytes.
+
+### Patch
+
+None posted yet, lol. 
+
+
+## CVE-2022-0435 - Linux Kernel TIPC
+
+### Code
