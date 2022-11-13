@@ -77,17 +77,20 @@ print_dynamic_symbol (Filedata *filedata, unsigned long si,
 ### Code Review
 
 1. `printf("%-7s")` is being called. 
-This format specifier meaning is *left* align of the output string (due to "-") for up to 7 bytes. 
+This format specifier means a *left* align of the output string (due to "-"), for up to 7 bytes. 
 
-In a similar manner, "%+7s" would perform *right* alignment of 7 bytes. We can think of the "-" as negative alignment. 
+In a similar manner, "%+7s" would perform *right* alignment of 7 bytes (We can think of the "-" as negative alignment). 
 
-Cool side notes - 
+Cool side notes:
 
-Advanced usage of format specifiers includes the dot operation - `"%24.6s"`, which states *precision* (For strings: truncs the string after 6 bytes, not including the null byte. For integers: number of digits). 
+Dot operation - `"%24.6s"`, states *precision*.
+For strings it truncs the string after 6 bytes (not including the null byte).
+For integers it represents the number of digits, and for floats the number of digits after the dot. 
 
 Asterisk operation - `"%*d"`, which takes the alignment value as an extra format specifier (which can be supplied during runtime). 
 
 Finally, the dollar operation - `"%2$d"`, states the order of the formatted value (like `'{2}:{1}'.format(last, first)` within python).
+
 
 2. Buffer overflow due to `sprintf()` usage: 
 
