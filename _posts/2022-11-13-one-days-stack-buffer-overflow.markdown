@@ -92,10 +92,8 @@ Finally, the dollar operation - `"%2$d"`, states the order of the formatted valu
 2. Buffer overflow due to `sprintf()` usage: 
 
 ```c
-
 char buffer[256];
 len_avail -= sprintf (buffer, "@%s", version_string);
-
 ```
 
 We can fully control `version_string`, hence overflowing the 256-byte array `buffer`. 
@@ -105,13 +103,11 @@ We can fully control `version_string`, hence overflowing the 256-byte array `buf
 The following patch was made:
 
 ```c
-
 -      char buffer[256];
 +      char buffer[16];
  
 -      len_avail -= sprintf (buffer, "@%s", version_string);
 +      len_avail -= 1 + strlen (version_string);
-
 ```
 
 So instead of counting the written bytes into the buffer, a call for `strlen()` is being made (also taking into account the null byte). 
@@ -125,7 +121,6 @@ In case we fully control `version_string`, we may do a trick and perform integer
 ## CVE-2021-43579 - HTMLDOC
 
 ```c
-
 ////ACID: everything read from fp
 static int                       /* O - 0 = success, -1 = fail */
 image_load_bmp(image_t *img,     /* I - Image to load into */
@@ -489,7 +484,6 @@ image_load_bmp(image_t *img,     /* I - Image to load into */
 
   return (0);
 }
-
 ```
 
 ### Code Review
@@ -501,15 +495,18 @@ if (colors_used == 0 && depth <= 8)
     colors_used = 1 << depth;
 
 fread(colormap, (size_t)colors_used, 4, fp);
-
 ```
 
 The array is defined as `char colormap[256][4]` (1024 bytes long), and we fully control `int depth`. 
+
 Because of `depth` check, the maximal size of `colors_used` is 256, and there is no trivial BOF.
 
+
 However, note that `depth` is defined as an int. 
-Therefore, if we set its value to negative value, the check will pass, while setting `colors_used` to our wish (the trick is that operator '<<' DO work with negative numbers!). 
-For example, by setting `depth == -22`, we would achieve `colors_used = 0x400`, hence creating a buffer overflow of (0x400 * 4  - 1024) bytes.
+
+Therefore, if we set its value to negative value, the check will pass, while setting `colors_used` to our wish (the trick is that operator '<<' DO work with negative numbers). 
+
+For example, by setting `depth == -22`, we would achieve `colors_used = 0x400`, hence creating a buffer overflow of `(0x400 * 4  - 1024)` bytes.
 
 2. `img->pixels` heap buffer overflow:
 
@@ -517,11 +514,11 @@ For example, by setting `depth == -22`, we would achieve `colors_used = 0x400`, 
 img->pixels = (uchar *)malloc((size_t)(img->width * img->height * img->depth));
   if (img->pixels == NULL)
     return (-1);
-
 ```
 
 Since we control the `img` parameters, we may set one of these as `0`. 
 The result of `malloc(0)` is unspecified, and usually *returns a pointer to length 0 buffer, instead of NULL* . 
+
 The assignment is performed via the `ptr` variable. 
 
 ### Patch
@@ -535,8 +532,10 @@ else if (colors_used > 256)
 ```
 
 This patch is awful for many reasons. 
-The first reason - the wrongly used `else if` - it should be checked in addition to the `if` block.
-The second reason - `color_used` is defined as an int, and therefore the check may pass for negative value, while overflowing the buffer (because of the size_t cast).
+
+The first reason -  wrongly used `else if` - it should be checked in addition to the `if` block.
+
+The second reason - `color_used` is defined as an `int` (instead of `uint`), and therefore the check may pass for negative values, while overflowing the buffer (due to the size_t cast).
 
 
 ## CVE-Unknown-SSBB-BH2021🇰🇷 - Exynos Baseband
