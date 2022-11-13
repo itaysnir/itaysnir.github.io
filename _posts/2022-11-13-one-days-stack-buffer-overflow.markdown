@@ -108,6 +108,419 @@ So instead of counting the written bytes into the buffer, a call for `strlen()` 
 1. Note - `len_avail` is defined as an `int`. 
 In case we fully control `version_string`, we may do a trick and perform integer overflow, making `len_avail` negative. 
 
-2. The second `sprintf` copies a maximal digit representation `(%d)` (2147483648), a space, 2 brackets, and null byte. Meaning a total of 14 bytes. The new size of the buffer is 16 bytes, so this fix is safe (BOF-wise). 
+2. The second `sprintf` copies a maximal digit representation `(%d)` (2147483648), a space, 2 brackets, and null byte. Meaning a total of 14 bytes. The new size of the buffer is 16 bytes, so this fix is safe (at least BOF-wise). 
 
-## CVE-2021-43579 
+
+## CVE-2021-43579 - HTMLDOC
+
+```c
+
+////ACID: everything read from fp
+static int                       /* O - 0 = success, -1 = fail */
+image_load_bmp(image_t *img,     /* I - Image to load into */
+               FILE    *fp,      /* I - File to read from */
+               int     gray,     /* I - Grayscale image? */
+               int     load_data)/* I - 1 = load image data, 0 = just info */
+{
+  int   info_size,	/* Size of info header */
+        depth,		/* Depth of image (bits) */
+        compression,	/* Type of compression */
+        colors_used,	/* Number of colors used */
+        x, y,		/* Looping vars */
+        color,		/* Color of RLE pixel */
+        count,		/* Number of times to repeat */
+        temp,		/* Temporary color */
+        align;		/* Alignment bytes */
+        uchar bit,	/* Bit in image */
+        byte;		/* Byte in image */
+        uchar *ptr;	/* Pointer into pixels */
+        uchar		colormap[256][4];/* Colormap */
+
+
+  // Get the header...
+  getc(fp);			/* Skip "BM" sync chars */
+  getc(fp);
+  read_dword(fp);		/* Skip size */
+  read_word(fp);		/* Skip reserved stuff */
+  read_word(fp);
+  read_dword(fp);
+
+  // Then the bitmap information...
+  info_size        = (int)read_dword(fp);
+  img->width       = read_long(fp);
+  img->height      = read_long(fp);
+  read_word(fp);
+  depth            = read_word(fp);
+  compression      = (int)read_dword(fp);
+  read_dword(fp);
+  read_long(fp);
+  read_long(fp);
+  colors_used      = (int)read_dword(fp);
+  read_dword(fp);
+
+  if (img->width <= 0 || img->width > 8192 || img->height <= 0 || img->height > 8192)
+    return (-1);
+
+  if (info_size > 40)
+    for (info_size -= 40; info_size > 0; info_size --)
+      getc(fp);
+
+  // Get colormap...
+  if (colors_used == 0 && depth <= 8)
+    colors_used = 1 << depth;
+
+  fread(colormap, (size_t)colors_used, 4, fp);
+
+  // Setup image and buffers...
+  img->depth = gray ? 1 : 3;
+
+  // If this image is indexed and we are writing an encrypted PDF file, bump the use count so
+  // we create an image object (Acrobat 6 bug workaround)
+  if (depth <= 8 && Encryption)
+    img->use ++;
+
+  // Return now if we only need the dimensions...
+  if (!load_data)
+    return (0);
+
+  img->pixels = (uchar *)malloc((size_t)(img->width * img->height * img->depth));
+  if (img->pixels == NULL)
+    return (-1);
+
+  if (gray && depth <= 8)
+  {
+    // Convert colormap to grayscale...
+    for (color = colors_used - 1; color >= 0; color --)
+      colormap[color][0] = (colormap[color][2] * 31 +
+                            colormap[color][1] * 61 +
+                            colormap[color][0] * 8) / 100;
+  }
+
+  // Read the image data...
+  color = 0;
+  count = 0;
+  align = 0;
+  byte  = 0;
+  temp  = 0;
+
+  for (y = img->height - 1; y >= 0; y --)
+  {
+    ptr = img->pixels + y * img->width * img->depth;
+
+    switch (depth)
+    {
+      case 1 : /* Bitmap */
+          for (x = img->width, bit = 128; x > 0; x --)
+	  {
+	    if (bit == 128)
+	      byte = (uchar)getc(fp);
+
+	    if (byte & bit)
+	    {
+	      if (!gray)
+	      {
+		*ptr++ = colormap[1][2];
+		*ptr++ = colormap[1][1];
+              }
+
+	      *ptr++ = colormap[1][0];
+	    }
+	    else
+	    {
+	      if (!gray)
+	      {
+		*ptr++ = colormap[0][2];
+		*ptr++ = colormap[0][1];
+	      }
+
+	      *ptr++ = colormap[0][0];
+	    }
+
+	    if (bit > 1)
+	      bit >>= 1;
+	    else
+	      bit = 128;
+	  }
+
+         /*
+	  * Read remaining bytes to align to 32 bits...
+	  */
+
+	  for (temp = (img->width + 7) / 8; temp & 3; temp ++)
+	    getc(fp);
+          break;
+
+      case 4 : /* 16-color */
+          for (x = img->width, bit = 0xf0; x > 0; x --)
+	  {
+	   /*
+	    * Get a new count as needed...
+	    */
+
+            if (compression != BI_RLE4 && count == 0)
+	    {
+	      count = 2;
+	      color = -1;
+            }
+
+	    if (count == 0)
+	    {
+	      while (align > 0)
+	      {
+	        align --;
+		getc(fp);
+              }
+
+	      if ((count = getc(fp)) == 0)
+	      {
+		if ((count = getc(fp)) == 0)
+		{
+		 /*
+		  * End of line...
+		  */
+
+                  x ++;
+		  continue;
+		}
+		else if (count == 1)
+		{
+		 /*
+		  * End of image...
+		  */
+
+		  break;
+		}
+		else if (count == 2)
+		{
+		 /*
+		  * Delta...
+		  */
+
+		  count = getc(fp) * getc(fp) * img->width;
+		  color = 0;
+		}
+		else
+		{
+		 /*
+		  * Absolute...
+		  */
+
+		  color = -1;
+		  align = ((4 - (count & 3)) / 2) & 1;
+		}
+	      }
+	      else
+	        color = getc(fp);
+            }
+
+           /*
+	    * Get a new color as needed...
+	    */
+
+	    count --;
+
+            if (bit == 0xf0)
+	    {
+              if (color < 0)
+		temp = getc(fp) & 255;
+	      else
+		temp = color;
+
+             /*
+	      * Copy the color value...
+	      */
+
+              if (!gray)
+	      {
+		*ptr++ = colormap[temp >> 4][2];
+		*ptr++ = colormap[temp >> 4][1];
+              }
+
+	      *ptr++ = colormap[temp >> 4][0];
+	      bit    = 0x0f;
+            }
+	    else
+	    {
+             /*
+	      * Copy the color value...
+	      */
+
+	      if (!gray)
+	      {
+	        *ptr++ = colormap[temp & 15][2];
+	        *ptr++ = colormap[temp & 15][1];
+	      }
+
+	      *ptr++ = colormap[temp & 15][0];
+	      bit    = 0xf0;
+	    }
+	  }
+          break;
+
+      case 8 : /* 256-color */
+          for (x = img->width; x > 0; x --)
+	  {
+	   /*
+	    * Get a new count as needed...
+	    */
+
+            if (compression != BI_RLE8)
+	    {
+	      count = 1;
+	      color = -1;
+            }
+
+	    if (count == 0)
+	    {
+	      while (align > 0)
+	      {
+	        align --;
+		getc(fp);
+              }
+
+	      if ((count = getc(fp)) == 0)
+	      {
+		if ((count = getc(fp)) == 0)
+		{
+		 /*
+		  * End of line...
+		  */
+
+                  x ++;
+		  continue;
+		}
+		else if (count == 1)
+		{
+		 /*
+		  * End of image...
+		  */
+
+		  break;
+		}
+		else if (count == 2)
+		{
+		 /*
+		  * Delta...
+		  */
+
+		  count = getc(fp) * getc(fp) * img->width;
+		  color = 0;
+		}
+		else
+		{
+		 /*
+		  * Absolute...
+		  */
+
+		  color = -1;
+		  align = (2 - (count & 1)) & 1;
+		}
+	      }
+	      else
+	        color = getc(fp);
+            }
+
+           /*
+	    * Get a new color as needed...
+	    */
+
+            if (color < 0)
+	      temp = getc(fp);
+	    else
+	      temp = color;
+
+            count --;
+
+           /*
+	    * Copy the color value...
+	    */
+
+            if (!gray)
+	    {
+	      *ptr++ = colormap[temp][2];
+	      *ptr++ = colormap[temp][1];
+	    }
+
+	    *ptr++ = colormap[temp][0];
+	  }
+          break;
+
+      case 24 : /* 24-bit RGB */
+          if (gray)
+	  {
+            for (x = img->width; x > 0; x --)
+	    {
+	      temp = getc(fp) * 8;
+	      temp += getc(fp) * 61;
+	      temp += getc(fp) * 31;
+	      *ptr++ = (uchar)(temp / 100);
+	    }
+	  }
+	  else
+	  {
+            for (x = img->width; x > 0; x --, ptr += 3)
+	    {
+	      ptr[2] = (uchar)getc(fp);
+	      ptr[1] = (uchar)getc(fp);
+	      ptr[0] = (uchar)getc(fp);
+	    }
+          }
+
+         /*
+	  * Read remaining bytes to align to 32 bits...
+	  */
+
+	  for (temp = img->width * 3; temp & 3; temp ++)
+	    getc(fp);
+          break;
+    }
+  }
+
+  return (0);
+}
+
+```
+
+### Code Review
+1. `fread` stack buffer overflow:
+```c
+if (colors_used == 0 && depth <= 8)
+    colors_used = 1 << depth;
+
+fread(colormap, (size_t)colors_used, 4, fp);
+```
+
+The array is defined as `char colormap[256][4]` (1024 bytes long), and we fully control `int depth`. 
+Because of `depth` check, the maximal size of `colors_used` is 256, and there is no trivial BOF.
+
+However, note that `depth` is defined as an int. 
+Therefore, if we set its value to negative value, the check will pass, while setting `colors_used` to our wish (the trick is that operator '<<' DO work with negative numbers!). 
+For example, by setting `depth == -22`, we would achieve `colors_used = 0x400`, hence creating a buffer overflow of (0x400 * 4  - 1024) bytes.
+
+2. `img->pixels` heap buffer overflow:
+```c
+img->pixels = (uchar *)malloc((size_t)(img->width * img->height * img->depth));
+  if (img->pixels == NULL)
+    return (-1);
+```
+Since we control the `img` parameters, we may set one of these as `0`. 
+The result of `malloc(0)` is unspecified, and usually *returns a pointer to length 0 buffer, instead of NULL* . 
+The assignment is performed via the `ptr` variable. 
+
+### Patch
+The following patch was added:
+```c
+if (colors_used == 0 && depth <= 8)
+    colors_used = 1 << depth;
+else if (colors_used > 256)
+    return -1
+
+```
+
+This patch is awful for many reasons. 
+The first reason - the wrongly used `else if` - it should be checked in addition to the `if` block.
+The second reason - `color_used` is defined as an int, and therefore the check may pass for negative value, while overflowing the buffer (because of the size_t cast).
+
+
+## CVE-Unknown-SSBB-BH2021🇰🇷 - Exynos Baseband
+
