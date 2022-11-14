@@ -879,3 +879,238 @@ These functions are suffied with `_chk`.
 
 Post glibc2.23, `-DFORTIFY_SOURCE=3` was added - and can catch even more vulns. 
 
+
+## CVE-2020-10005 - macOS SMB
+
+### Code
+
+```c
+undefined8
+smb2::extract(uchar **pkt_ptr_ptr,uchar **packet_size_hdr_ptr_ptr,tree_connect_request *memcpy_src,
+             uchar **smb_hdr_ptr_ptr)
+
+{
+  short *psVar1;
+  undefined8 uVar2;
+  short *packetEnd;
+  ushort tc_PathLength;
+  ushort tc_PathOffset;
+  short tc_StructureSize;
+  
+  psVar1 = (short *)*pkt_ptr_ptr;
+  if (7 < (long)*packet_size_hdr_ptr_ptr - (long)psVar1) {
+    tc_StructureSize = *psVar1;
+    *pkt_ptr_ptr = (uchar *)(psVar1 + 1);
+    memcpy_src->short_1_StructureSize = tc_StructureSize;
+    if (tc_StructureSize == 9) {
+      *pkt_ptr_ptr = (uchar *)(psVar1 + 2);
+      memcpy_src->short_2_Flags = 0;
+      tc_PathOffset = psVar1[2];
+      *pkt_ptr_ptr = (uchar *)(psVar1 + 3);
+      memcpy_src->short_3_PathOffset = tc_PathOffset;
+      tc_PathLength = psVar1[3];
+      *pkt_ptr_ptr = (uchar *)(psVar1 + 4);
+      memcpy_src->short_4_PathLength = tc_PathLength;
+      packetEnd = (short *)(*smb_hdr_ptr_ptr + tc_PathOffset +
+                           ((uint)(*smb_hdr_ptr_ptr + tc_PathOffset) & 1));
+      *pkt_ptr_ptr = (uchar *)packetEnd;
+      if ((psVar1 <= packetEnd) && (psVar1 = (short *)*packet_size_hdr_ptr_ptr, packetEnd <= psVar1)
+         ) {
+        packetEnd = (short *)((long)packetEnd + (ulong)tc_PathLength);
+        if (psVar1 <= packetEnd) {
+          packetEnd = psVar1;
+        }
+        uVar2 = smb::extract_utf16_string
+                          (pkt_ptr_ptr,(uchar *)packetEnd,(oem_string *)&memcpy_src->buf);
+        return uVar2;
+      }
+    }
+  }
+  return 0;
+}
+
+////ACID: in_packet_ptr, in_packet_size
+ulong smb2_dispatch_tree_connect(smb_request *param_1, uchar *in_packet_ptr, uchar *in_packet_size)
+{
+  int *piVar1;
+  void **this;
+  long lVar2;
+  char cVar4;
+  ulong num_chars;
+  undefined8 uVar6;
+  ulong uVar7;
+  byte bVar8;
+  void *lVar9;
+  uint bitmasked_num_chars;
+  uchar *local_8b8;
+  uchar *local_8b0;
+  uchar *packet_input_ptr;
+  uchar *packet_size;
+  unknown_struct_1 local_898;
+  undefined4 uStack2188;
+  int local_87c;
+  undefined4 local_878;
+  uint uStack2164;
+  undefined2 local_870;
+  undefined2 local_86e;
+  undefined2 uStack2156;
+  uint local_86a;
+  wchar16 wcSharePath [1024];
+  tree_connect_request memcpy_src;
+  undefined8 local_48;
+  long local_38;
+  long lVar3;
+  uchar *puVar2;
+  
+  local_38 = *(long *)__got::___stack_chk_guard;
+  memcpy_src = ZEXT816(0);
+  local_48 = 0;
+  local_87c = 0;
+  _local_898 = ZEXT816(0);
+  packet_input_ptr = in_packet_ptr;
+  packet_size = in_packet_size;
+  __stubs::___bzero(wcSharePath,0x800);
+  cVar4 = smb2::extract(&packet_input_ptr,&packet_size,&memcpy_src,(uchar **)(param_1 + 9));
+  num_chars = 1;
+  if (cVar4 == '\0') goto fail1;
+  local_898 = CONCAT48((uint)local_48,local_898.0_8_buf_ptr);
+  _local_898 = CONCAT88(stack0xfffffffffffff770,memcpy_src.buf);
+  if (memcpy_src.buf == (void *)0x0) {
+fail2:
+    uVar6 = platform::log::smbx_std_log();
+    cVar4 = __stubs::_os_log_type_enabled(uVar6,0x10);
+    if (cVar4 != '\0') {
+      local_878 = 0x8200102;
+      uStack2164 = 0x8f914;
+      local_870 = 1;
+      local_86e = 0;
+      __stubs::__os_log_impl(0x100000000,uVar6,0x10,"%s: bad path for tree connect",&local_878,0xc);
+    }
+    bitmasked_num_chars = 0xc00000be;
+  }
+  else {
+    bitmasked_num_chars = (uint)local_48 & 0x3fffffff;
+    num_chars = (ulong)bitmasked_num_chars;
+    if ((local_898 & (undefined  [12])0x3fffffff) == (undefined  [12])0x0) goto fail2;
+      if ((int)(uint)local_48 < 0) {
+        if (*(short *)((long)memcpy_src.buf + num_chars * 2 + -2) != 0) goto memcpy_path;
+      }
+      else if (*(short *)(num_chars * 2 + -2) != 0) {
+        memcpy_src.buf = (void *)0x0;
+memcpy_path:
+        __stubs::_memcpy(wcSharePath,memcpy_src.buf,num_chars * 2);
+        wcSharePath[num_chars] = L'\0';
+        local_898 = CONCAT48(bitmasked_num_chars + 0x80000000,wcSharePath);
+      }
+      bitmasked_num_chars = connect_to_named_tree(param_1,(oem_string *)&local_898,&local_87c);
+      if (bitmasked_num_chars < 0x40000000) {
+        *(int *)¶m_1[6].PathOffset = local_87c;
+        smb_session::find_tree((int)register0x00000020 + -0x878);
+        lVar2 = *(long *)(param_1 + 10);
+        lVar3 = CONCAT44(uStack2164,local_878);
+        *(long *)(param_1 + 10) = lVar3;
+        if (lVar3 != 0) {
+          LOCK();
+          *(int *)(lVar3 + 0x10) = *(int *)(lVar3 + 0x10) + 1;
+        }
+        ///...
+      }
+  }
+}
+```
+
+### Code Review
+
+1. `wcSharePath` is a static array of 1024 bytes. 
+
+2. We fully control `extract` first two parameters. This function fills the buffer `memcpy_src.buf`, which later on serves as a source for memcpy.
+
+Therefore, we control `tc_PathOffset` value, which in turn may lead to huge `packetEnd` value. 
+A possible buffer overflow may occur, depending on `extract_utf16_string` implementation. 
+
+```c
+uVar2 = smb::extract_utf16_string(pkt_ptr_ptr,(uchar *)packetEnd,(oem_string *)&memcpy_src->buf);
+```
+
+Anyways, the content of `memcpy_src->buf` is fully determined by the input.
+
+3. The stack buffer overflow:
+
+```c
+memcpy_path:
+        __stubs::_memcpy(wcSharePath,memcpy_src.buf,num_chars * 2);
+        wcSharePath[num_chars] = L'\0';
+```
+
+Note - `bitmasked_num_chars` is input controlled, hence the overflow.
+
+### Patch
+
+The following check was added:
+
+```c
+if (bitmasked_num_chars < 0x155)
+{...}
+``` 
+
+## CVE-2021-21574 - UEFI BIOS
+
+[video][uefi_bios_video]
+Dell laptopts have a BIOS that implements UEFI. 
+
+This BIOS have a feature to support remote BIOS update. 
+
+The dell firmware access to `*.dell.com` via SSL, and pulls down an XML file (`CatalogBc.xml`). 
+
+All of CVE-2021-2157(1-4) are published vulns for this remote patch capability. 
+
+### Code
+
+```c
+// Pseudocode derived from assembly
+idx = 0
+write_ptr = buf_on_stack; //rbp-0x158
+while(1) {
+    if ( idx >= strnlen(hex_ptr, 20000) )
+        break;
+
+    *write_ptr++ = CONVERT_HEX(hex_ptr[idx]) << 4 | 
+                   CONVERT_HEX(hex_ptr[idx+1]);
+    idx += 2;
+}
+if ( buf_on_stack != calculated_sha256 ) {
+	if ( memcmp(buf_on_stack, calculated_sha256, 32) )
+		retval = EFI_NOT_FOUND;
+	}
+}
+```
+
+### Code Review
+
+1. Note we control the input `hex_ptr`. 
+
+We also note `write_ptr` is a buffer allocated by 0x158 bytes on the stack. 
+
+2. `strnlen` actually returns the minimum of `strlen(s)` and `n`. 
+
+3. Stack buffer overflow:
+
+```c
+*write_ptr++ = CONVERT_HEX(hex_ptr[idx]) << 4 | 
+                   CONVERT_HEX(hex_ptr[idx+1]);
+```
+
+Every two bytes of the input hex string, are converted to raw byte.
+However - note `idx` grows to `min(strlen(hex_ptr), 20000)`. 
+
+So as long as `strlen(hex_ptr) > 0x158`, an overflow occurs.
+Just enter a long string, without any `\x00` within its first bytes.
+
+
+### Patch
+
+Proprietary code. 
+We dont know :/ 
+
+
+[uefi_bios_video]: https://www.youtube.com/watch?v=qxWfkSonK7M&ab_channel=DEFCONConference
