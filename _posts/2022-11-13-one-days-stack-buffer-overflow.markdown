@@ -1056,6 +1056,7 @@ if (bitmasked_num_chars < 0x155)
 ## CVE-2021-21574 - UEFI BIOS
 
 [video][uefi_bios_video]
+
 Dell laptopts have a BIOS that implements UEFI. 
 
 This BIOS have a feature to support remote BIOS update. 
@@ -1111,6 +1112,27 @@ Just enter a long string, without any `\x00` within its first bytes.
 
 Proprietary code. 
 We dont know :/ 
+
+
+## CVE-2018-9312
+
+### Code
+
+```c
+char filename[1024];
+
+memset(filename, 0, 0x400);
+sprintf(filename, "%s/%s", basePath, metadata->decompressedFileName);
+```
+
+### Code Review
+
+1. Trivial overflow on `sprintf` - no check is being made on any of the format parameters. 
+
+
+### Patch
+
+None
 
 
 [uefi_bios_video]: https://www.youtube.com/watch?v=qxWfkSonK7M&ab_channel=DEFCONConference
