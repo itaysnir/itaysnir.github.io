@@ -650,4 +650,220 @@ None posted yet, lol.
 
 ## CVE-2022-0435 - Linux Kernel TIPC
 
+Transparent inter-Process Communication protocol - for IPC over the network. 
+
 ### Code
+
+```c
+
+/* struct tipc_peer: state of a peer node and its domain
+ * @addr: tipc node identity of peer
+ * @head_map: shows which other nodes currently consider peer 'up'
+ * @domain: most recent domain record from peer
+ * @hash: position in hashed lookup list
+ * @list: position in linked list, in circular ascending order by 'addr'
+ * @applied: number of reported domain members applied on this monitor list
+ * @is_up: peer is up as seen from this node
+ * @is_head: peer is assigned domain head as seen from this node
+ * @is_local: peer is in local domain and should be continuously monitored
+ * @down_cnt: - numbers of other peers which have reported this on lost
+ */
+struct tipc_peer {
+	u32 addr;
+	struct tipc_mon_domain *domain;
+	struct hlist_node hash;
+	struct list_head list;
+	u8 applied;
+	u8 down_cnt;
+	bool is_up;
+	bool is_head;
+	bool is_local;
+};
+
+/* struct tipc_mon_domain: domain record to be transferred between peers
+ * @len: actual size of domain record
+ * @gen: current generation of sender's domain
+ * @ack_gen: most recent generation of self's domain acked by peer
+ * @member_cnt: number of domain member nodes described in this record
+ * @up_map: bit map indicating which of the members the sender considers up
+ * @members: identity of the domain members
+ */
+struct tipc_mon_domain {
+	u16 len;
+	u16 gen;
+	u16 ack_gen;
+	u16 member_cnt;
+	u64 up_map;
+	u32 members[MAX_MON_DOMAIN];
+};
+
+#define MAX_MON_DOMAIN       64
+
+static int dom_rec_len(struct tipc_mon_domain *dom, u16 mcnt)
+{
+	return ((void *)&dom->members - (void *)dom) + (mcnt * sizeof(u32));
+}
+
+/* tipc_mon_rcv - process monitor domain event message
+ */
+// ACID: *data, dlen
+void tipc_mon_rcv(struct net *net, void *data, u16 dlen, u32 addr,
+		  struct tipc_mon_state *state, int bearer_id)
+{
+	struct tipc_monitor *mon = tipc_monitor(net, bearer_id);
+	struct tipc_mon_domain *arrv_dom = data;
+	struct tipc_mon_domain dom_bef;
+	struct tipc_mon_domain *dom;
+	struct tipc_peer *peer;
+	u16 new_member_cnt = ntohs(arrv_dom->member_cnt);
+	int new_dlen = dom_rec_len(arrv_dom, new_member_cnt);
+	u16 new_gen = ntohs(arrv_dom->gen);
+	u16 acked_gen = ntohs(arrv_dom->ack_gen);
+	bool probing = state->probing;
+	int i, applied_bef;
+
+	state->probing = false;
+
+	/* Sanity check received domain record */
+	if (dlen < dom_rec_len(arrv_dom, 0))
+		return;
+	if (dlen != dom_rec_len(arrv_dom, new_member_cnt))
+		return;
+	if ((dlen < new_dlen) || ntohs(arrv_dom->len) != new_dlen)
+		return;
+
+	/* Synch generation numbers with peer if link just came up */
+	if (!state->synched) {
+		state->peer_gen = new_gen - 1;
+		state->acked_gen = acked_gen;
+		state->synched = true;
+	}
+
+	if (more(acked_gen, state->acked_gen))
+		state->acked_gen = acked_gen;
+
+	/* Drop duplicate unless we are waiting for a probe response */
+	if (!more(new_gen, state->peer_gen) && !probing)
+		return;
+
+	write_lock_bh(&mon->lock);
+	peer = get_peer(mon, addr);
+	if (!peer || !peer->is_up)
+		goto exit;
+
+	/* Peer is confirmed, stop any ongoing probing */
+	peer->down_cnt = 0;
+
+	/* Task is done for duplicate record */
+	if (!more(new_gen, state->peer_gen))
+		goto exit;
+
+	state->peer_gen = new_gen;
+
+	/* Cache current domain record for later use */
+	dom_bef.member_cnt = 0;
+	dom = peer->domain;
+	if (dom)
+		memcpy(&dom_bef, dom, dom->len);
+
+	/* Transform and store received domain record */
+	if (!dom || (dom->len < new_dlen)) {
+		kfree(dom);
+		dom = kmalloc(new_dlen, GFP_ATOMIC);
+		peer->domain = dom;
+		if (!dom)
+			goto exit;
+	}
+	dom->len = new_dlen;
+	dom->gen = new_gen;
+	dom->member_cnt = new_member_cnt;
+	dom->up_map = be64_to_cpu(arrv_dom->up_map);
+	for (i = 0; i < new_member_cnt; i++)
+		dom->members[i] = ntohl(arrv_dom->members[i]);
+
+	/* Update peers affected by this domain record */
+	applied_bef = peer->applied;
+	mon_apply_domain(mon, peer);
+	mon_identify_lost_members(peer, &dom_bef, applied_bef);
+	mon_assign_roles(mon, peer_head(peer));
+exit:
+	write_unlock_bh(&mon->lock);
+}
+```
+
+### Code Review
+
+1. We control `dlen` parameter, which is defined as a `uint16_t`. 
+This value seems abit low, so there might be an integer overflow for inputs greater than `2^16`. 
+
+2. `arrv_dom` contains a `len` attirbute of `uint16_t`, as well as `members` static array, of total length `4 * 64 = 256` bytes.
+
+3. `new_dlen` is calculated by `dom_rec_len`, which returns the offset a new member will be written to within the struct.
+
+4. Integer underflow:
+
+```c
+state->peer_gen = new_gen - 1;
+```
+
+No value check is performed. 
+We fully control `new_gen`, and may set it to 0 - to perform integer underflow for `peer_gen`. 
+
+5. The following `memcpy` seems yummy, however its exploitation isn't trivial:
+
+```c
+/* Cache current domain record for later use */
+	dom_bef.member_cnt = 0;
+	dom = peer->domain;
+	if (dom)
+		memcpy(&dom_bef, dom, dom->len);
+```
+
+`dom` is determined by `peer`, which we cannot control - as it initiated by `mon` and `addr` - both parameters we have no control of.
+
+6. Stack buffer overflow:
+
+```c
+for (i = 0; i < new_member_cnt; i++)
+		dom->members[i] = ntohl(arrv_dom->members[i]);
+```
+
+As previously stated, the `members` array is a static array of 64 elements. 
+There are very few sanity checks:
+
+```c
+/* Sanity check received domain record */
+	if (dlen < dom_rec_len(arrv_dom, 0))
+		return;
+	if (dlen != dom_rec_len(arrv_dom, new_member_cnt))
+		return;
+	if ((dlen < new_dlen) || ntohs(arrv_dom->len) != new_dlen)
+		return;
+```
+
+And Since `new_members_cnt` and `dlen` are controlled by user input, it seems like an overflow may occur.
+(We may insert a large value of `new_member_cnt`, and match it with corresponding large `dlen` to bypass the sanities). 
+
+However - note this snippet is *actually safe* - the `kmalloc(new_dlen)` call allocates the right amount of extra bytes!
+It still lets us fully control the content of `dom`. 
+
+
+7. The `kmalloc` snippet is triggered only for the first time:
+
+```c
+if (!dom || (dom->len < new_dlen)) {
+		kfree(dom);
+		dom = kmalloc(new_dlen, GFP_ATOMIC);
+		peer->domain = dom;
+		if (!dom)
+			goto exit;
+```
+
+So after a single trigger of this flow (cached packet) - we may control the `peer->domain` (`dom`), which is used by the naive `memcpy` call (5).
+
+Because we can specifically control `dom->len`, a trivial stack bufferoverflow occurs. 
+
+### Patch
+
+Not stated.
+
