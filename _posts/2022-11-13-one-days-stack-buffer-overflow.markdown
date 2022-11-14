@@ -861,9 +861,21 @@ if (!dom || (dom->len < new_dlen)) {
 
 So after a single trigger of this flow (cached packet) - we may control the `peer->domain` (`dom`), which is used by the naive `memcpy` call (5).
 
-Because we can specifically control `dom->len`, a trivial stack bufferoverflow occurs. 
+Because we can specifically control `dom->len`, a trivial stack buffer overflow occurs. 
 
 ### Patch
 
 Not stated.
+
+
+## Fortify Source
+
+`-D_FORTIFY_SOURCE=1` adds compile-time checks for buffer overflows within the code.
+
+It affects `memcpy, mempcpy, memove, memset, strncat, snprintf, strncpy` and many more.
+
+`-DFORTIFY_SOURCE=2` adds runtime checks, in addition to the compile-time checks. 
+These functions are suffied with `_chk`. 
+
+Post glibc2.23, `-DFORTIFY_SOURCE=3` was added - and can catch even more vulns. 
 
