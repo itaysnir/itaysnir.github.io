@@ -868,18 +868,6 @@ Because we can specifically control `dom->len`, a trivial stack buffer overflow 
 Not stated.
 
 
-## Fortify Source
-
-`-D_FORTIFY_SOURCE=1` adds compile-time checks for buffer overflows within the code.
-
-It affects `memcpy, mempcpy, memove, memset, strncat, snprintf, strncpy` and many more.
-
-`-DFORTIFY_SOURCE=2` adds runtime checks, in addition to the compile-time checks. 
-These functions are suffied with `_chk`. 
-
-Post glibc2.23, `-DFORTIFY_SOURCE=3` was added - and can catch even more vulns. 
-
-
 ## CVE-2020-10005 - macOS SMB
 
 ### Code
@@ -1135,4 +1123,49 @@ sprintf(filename, "%s/%s", basePath, metadata->decompressedFileName);
 None
 
 
+## Fortify Source
+
+`-D_FORTIFY_SOURCE=1` adds compile-time checks for buffer overflows within the code.
+
+It affects `memcpy, mempcpy, memove, memset, strncat, snprintf, strncpy` and many more.
+
+`-DFORTIFY_SOURCE=2` adds runtime checks, in addition to the compile-time checks. 
+These functions are suffied with `_chk`. 
+
+Post glibc2.23, `-DFORTIFY_SOURCE=3` was added - and can catch even more vulns. 
+
+It is recommended to add this within production environment. 
+
+## ASan, KASan
+
+Address Sanitizer, makes some drastic compile-time changes, in order to add both compile-time and runtime buffer overflows detection.
+
+For instance, it actually wraps `malloc()` calls within a more sophisticated mechanism, that keeps track of allocated memory (resembles dynamic binary instrumentation).
+
+Its main usages are within debug / QA builds, not for production. 
+Very usefull to use ASan + Fuzzer (such as AFL). 
+For gcc, it can be trigged via `-fsanitize=address`. 
+
+Detailed ASan guides: [link1][gcc-instrumentation] [link2][google-asan]
+
+Interesting CVEs found via ASan + fuzzer (all found by Talos team):
+
+```bash
+CVE-2021-21811 
+CVE-2017-2816 
+CVE-2020-28596 
+CVE-2020-13524 
+CVE-2019-5051 
+CVE-2021-30522 
+```
+
+Detailed found vulnerabilities:
+[link][talos-vuln] and [link][tbone-vuln].
+
+Note: ASan doesn't work well with `FORTIFY_SOURCE`. 
+
 [uefi_bios_video]: https://www.youtube.com/watch?v=qxWfkSonK7M&ab_channel=DEFCONConference
+[gcc-instrumentation]: https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html
+[google-asan]: https://github.com/google/sanitizers/wiki/AddressSanitizer#using-addresssanitizer
+[talos-vuln]: https://talosintelligence.com/vulnerability_reports/TALOS-2021-1297
+[tbone-vuln]: https://kunnamon.io/tbone/tbone-v1.0-redacted.pdf
