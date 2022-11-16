@@ -133,7 +133,7 @@ Added a sanity check for the provided size, prior to the `memmove` call.
 
 ## CVE-2020-11901 - Part of Ripple20 
 
-This is actually 4 vulnerabilities. We will focus only on the first one. 
+These are actually 4 vulnerabilities. I will focus only on one. 
 
 Heap overflow within TCP/IP stack, for parsing received DNS packets. 
 
@@ -146,7 +146,7 @@ Max supported label length is 63 bytes, and the max hostname length 255 bytes.
 
 For example, `www.google.com -> 3www6google3com0` .
 
-Moreover, DNS supports `message compression`, meaning replacement of label / domain name by a pointer to a prior occurance of the same name. 
+Moreover, DNS supports *message compression*, meaning replacement of label / domain name by a pointer to a prior occurance of the same name. 
 
 Compression pointer takes 2 bytes - and always starts with two `1` bits.
 
@@ -247,5 +247,236 @@ No patch released.
 
 
 ## CVE-2020-25111 - Part of Amnesia:33
+
+Yet another TCP/IP stack DNS vulnerability. 
+
+### Code
+
+```c
+////ACID: cp
+static uint16_t ScanName(uint8_t * cp, uint8_t ** npp){
+	uint8_t len;
+	uint16_t rc;
+	uint8_t *np;
+
+	if(*npp){
+		free(*npp);
+		*npp = 0;
+	}
+
+	if((*cp & 0xC0) == 0xC0)
+		return 2;
+
+	rc = strlen((char *) cp) + 1;
+	np = *npp = malloc(rc);
+	len = *cp++;
+	while(len){
+		while (len--)
+			*npp++ = *cp++;
+		if((len = *cp++) != 0)
+			*np++ = '.';
+	}
+	*np = 0;
+
+	return rc;
+}
+```
+
+### Code Review
+
+1. `cp` points towards the compression pointer of the encoded DNS hostname string within the packet. 
+
+2. The name pointers (`np, npp`) are malloced by a size, `rc`, determined by the given input. 
+This size calculation example:
+
+`3www6google3com0` is interpreted as `1+3+1+6+1+3 + 1` bytes, yielding 16 bytes, for 15 bytes name `www.google.com\x00`. 
+
+3. Heap buffer overflow:
+
+Note the while loop actually continues according to the written `len` byte within the packet. 
+Therefore, since we fully control `cp`, it is possible to insert a packet with mismatching `len` byte and string;
+
+For example, `\x30AA\x00` interpreted as a loop of 0x30 elements, while allocating only `3 + 1 = 4` bytes. 
+
+This results with an under-allocation of the name buffer.
+
+### Patch
+
+No patch released.
+
+
+## CVE-2020-27009 - Part of NAME:WRECK
+
+Yet another DNS vuln. 
+
+### Code
+
+```c
+//// No src was given for GET16() but we will assume it behaves as below:
+#define GET16(base, offset) *(unsigned short *)((void *)(base) + offset)
+
+////ACID: pkt
+STATUS DNS_Extract_Data (DNS_PKT_HEADER *pkt, CHAR *data, UNSIGNED *ttl, INT type){
+	DNS_RR			*pr_ptr;
+	INT			name_size, n_answers, rcode;
+	UINT16			length;
+	CHAR			*p_ptr, *name;
+
+	n_answers = GET16(pkt, DNS_ANCOUNT_OFFSET);
+	// [...]
+	/* If there is at least one reasonable answer and this is a response, process it */
+	if ((n_answers > 0) && (GET16(pkt, DNS_FLAGS_OFFSET) & DNS_QR)) {
+		/* Point to where the question starts.*/
+		p_ptr = (CHAR *)(pkt + 1);
+		/* Allocate a block of memory to put the name in */
+		if (NU_Allocate_Memory (&System_Memory, (VOID **)&name,
+							DNS_MAX_NAME_SIZE,
+							NU_NO_SUSPEND) != NU_SUCCESS) {
+			return (NU_NO_MEMORY);
+		}
+	
+		/* Extract the name. */
+		name_size = DNS_Unpack_Domain_Name (name, p_ptr, (CHAR *)pkt);
+
+		/*	Move the pointer past the name QTYPE and QCLASS to point at the
+			answer section of the response. */
+		p_ptr += name_size + 4;
+
+		/*	At this point, there may be several answers. We will take the first
+			answer section of the response. */
+		while ((n_answers--) > 0){
+			/* Extract the name from the answer. */
+			name_size = DNS_Unpack_Domain_Name (name, p_ptr, (CHAR *)pkt);
+			/* Move the pointer past the name. */
+			p_ptr += name_size;
+			/* Point to the resource record. */
+			rr_ptr = (DNS_RR *)p_ptr;
+			// [...]
+			/* Copy the length of this answer. */
+			length = GET16(rr_ptr, DNS_RDLENGTH_OFFSET);
+			// [...]
+		}
+		// [...]
+	}
+	// [...]
+}
+
+////ACID: src
+INT DNS_Unpack_Domain_Name(CHAR * dst, CHAR *src, CHAR *buf_begin) {
+	INT16		size;
+	INT		i, retval = 0;
+	CHAR		*savesrc;
+	
+	savesrc = src;
+	
+	while (*src){
+		size = *src;
+
+		while ((size & 0xC0) == 0xC0){
+			if (!retval)
+			{
+				retval = src - savesrc + 2;
+			}
+			src++;
+			src = &buf_begin[(size & 0x3f) * 256 + *src];
+			size = *src;
+		}
+		src++;
+
+		for (i=0; i < (size & 0x3f); i++){
+			*dst++ = *src++;
+		}
+		*dst++ = '.';
+	}
+
+	*(--dst) = 0;
+	src++;
+
+	if (!retval) {
+		retval = src - savesrc;
+	}
+	
+	return (retval);
+}
+```
+
+### Code Review
+
+1. `name` is allocated by a static size, `DNS_MAX_NAME_SIZE` (255). 
+
+2. Heap buffer overflow within `DNS_Unpack_Domain_Name`:
+
+The effective size is determined by the encoded sent packet. 
+
+Therefore, if the crafted hostname is larger than `DNS_MAX_NAME_SIZE` (either regular / compressed size), an overflow would occur.
+
+Example: let us assume the domain starts at offset 0x0c. 
+
+`\x3www\x6google\x3com\xc0\x0c\xc0\x0c...`
+
+The resulting hostname string is larger than the maximum value (255).
+
+Note: the code does sanitize corretly the size of a single label (`i < (size & 0x3f)`).
+
+However, since we can easily cascade labels, the maximum 255 value is easly overflowed. 
+
+### Patch
+
+No released patch.
+
+## CVE-2021-21555 - Dell UEFI
+
+UEFI supports *non-volatile-variables*, which are stored on SPI flash chip. 
+These can even be used by an OS (usually to configure FW options).
+
+For example, stating the next OS image to boot from. 
+
+Some NV variables are ment only for FW usage, not the OS.
+
+However, most FW developers enables NV-vars writes via kernel permissions. 
+
+Therefore, if attacker gained kernel privileges, it may actually tweak the FW configuration, using the kernel<->FW interface of NV variables. 
+
+The SPI memory is actually splitted to regions. Some of these regions are immutable, hence using an integrity check at boot time, while some of them are "naturally changing", and not being part of any kind of integrity check. 
+
+### Code
+
+```c
+Tries = 3;
+DataSize = 0; 
+...
+  do
+  {
+   Status = gRT->GetVariable(L"AepErrorLog", 
+          &VendorGuid, 
+          0, 
+          &DataSize, 
+          mEraseRecordShare);
+    --Tries;
+  }
+  while ( Status < 0 && Tries );
+...
+```
+
+### Code Review
+
+1. We control NVRAM variables (assuming kernel priviledges), and `mEraseRecordShare` is 964 bytes long buffer. 
+
+2. After a single call for `GetVariable`, `DataSize` is set to the size of the data stored within the buffer. 
+
+Note: in case the buffer is too small to hold the content of the variable, `DataSize` is set to the required buffer size.
+
+3. Heap overflow:
+- We may set the variable of `AepErrorLog` to some large buffer, above 964 bytes (lets say, 0x1000). 
+
+- The first try fill fail (as `DataSize` was initialized to 0), and store this large value (0x1000) within DataSize. 
+
+- On the second iteration, it will copy 0x1000 bytes to a heap buffer of 964 bytes. 
+
+### Patch
+
+No released patch.
+
+## CVE-2021-42739 - Linux Kernel CA_SEND_MSG ioctl
 
 ### Code
