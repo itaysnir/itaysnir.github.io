@@ -1138,7 +1138,8 @@ It is recommended to add this within production environment.
 
 ## ASan, KASan
 
-Address Sanitizer, makes some drastic compile-time changes, in order to add both compile-time and runtime buffer overflows detection.
+Address Sanitizer, and its equivalent kernel tool.
+Makes some drastic compile-time changes, in order to add both compile-time and runtime memory errors detection.
 
 For instance, it actually wraps `malloc()` calls within a more sophisticated mechanism, that keeps track of allocated memory (resembles dynamic binary instrumentation).
 
