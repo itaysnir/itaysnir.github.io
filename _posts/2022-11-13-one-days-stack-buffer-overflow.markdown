@@ -1165,8 +1165,25 @@ Detailed found vulnerabilities:
 
 Note: ASan doesn't work well with `FORTIFY_SOURCE`. 
 
+## Extra CVEs For Learning
+
+```bash
+CVE-2021-31321
+CVE-2021-33833
+CVE-2020-27347
+CVE-2021-30628
+CVE-2021-28972
+CVE-2021-21748
+CVE-2021-21149
+CVE-2021-3064
+CVE-2020-16898
+```
+
+And [this][blackhat-stack].
+
 [uefi_bios_video]: https://www.youtube.com/watch?v=qxWfkSonK7M&ab_channel=DEFCONConference
 [gcc-instrumentation]: https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html
 [google-asan]: https://github.com/google/sanitizers/wiki/AddressSanitizer#using-addresssanitizer
 [talos-vuln]: https://talosintelligence.com/vulnerability_reports/TALOS-2021-1297
 [tbone-vuln]: https://kunnamon.io/tbone/tbone-v1.0-redacted.pdf
+[blackhat-stack]: https://i.blackhat.com/USA-20/Wednesday/us-20-Buhren-All-You-Ever-Wanted-To-Know-About-The-AMD-Platform-Security-Processor-And-Were-Afraid-To-Emulate.pdf

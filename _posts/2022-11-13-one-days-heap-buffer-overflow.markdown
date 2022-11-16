@@ -479,4 +479,292 @@ No released patch.
 
 ## CVE-2021-42739 - Linux Kernel CA_SEND_MSG ioctl
 
+There is an optional kernel module (fdtv) that exposes ioctrl interface for controlling firewire digital TV.
+
+User can send arbitrary input data towards the kernel, via the ioctl interface.
+
 ### Code
+
+```c
+struct ca_msg {
+	unsigned int index;
+	unsigned int type;
+	unsigned int length;
+	unsigned char msg[256];
+};
+
+////ACID: arg
+static int fdtv_ca_pmt(struct firedtv *fdtv, void *arg)
+{
+	struct ca_msg *msg = arg;
+	int data_pos;
+	int data_length;
+	int i;
+
+	data_pos = 4;
+	if (msg->msg[3] & 0x80) {
+		data_length = 0;
+		for (i = 0; i < (msg->msg[3] & 0x7f); i++)
+			data_length = (data_length << 8) + msg->msg[data_pos++];
+	} else {
+		data_length = msg->msg[3];
+	}
+
+	return avc_ca_pmt(fdtv, &msg->msg[data_pos], data_length);
+}
+
+struct avc_command_frame {
+	u8 ctype;
+	u8 subunit;
+	u8 opcode;
+	u8 operand[509];
+};
+
+int avc_ca_pmt(struct firedtv *fdtv, char *msg, int length)
+{
+	struct avc_command_frame *c = (void *)fdtv->avc_data;
+	struct avc_response_frame *r = (void *)fdtv->avc_data;
+	int list_management;
+	int program_info_length;
+	int pmt_cmd_id;
+	int read_pos;
+	int write_pos;
+	int es_info_length;
+	int crc32_csum;
+	int ret;
+
+	if (unlikely(avc_debug & AVC_DEBUG_APPLICATION_PMT))
+		debug_pmt(msg, length);
+
+	mutex_lock(&fdtv->avc_mutex);
+
+	c->ctype   = AVC_CTYPE_CONTROL;
+	c->subunit = AVC_SUBUNIT_TYPE_TUNER | fdtv->subunit;
+	c->opcode  = AVC_OPCODE_VENDOR;
+
+	if (msg[0] != EN50221_LIST_MANAGEMENT_ONLY) {
+		dev_info(fdtv->device, "forcing list_management to ONLY\n");
+		msg[0] = EN50221_LIST_MANAGEMENT_ONLY;
+	}
+	/* We take the cmd_id from the programme level only! */
+	list_management = msg[0];
+	program_info_length = ((msg[4] & 0x0f) << 8) + msg[5];
+	if (program_info_length > 0)
+		program_info_length--; /* Remove pmt_cmd_id */
+	pmt_cmd_id = msg[6];
+
+	c->operand[0] = SFE_VENDOR_DE_COMPANYID_0;
+	c->operand[1] = SFE_VENDOR_DE_COMPANYID_1;
+	c->operand[2] = SFE_VENDOR_DE_COMPANYID_2;
+	c->operand[3] = SFE_VENDOR_OPCODE_HOST2CA;
+	c->operand[4] = 0; /* slot */
+	c->operand[5] = SFE_VENDOR_TAG_CA_PMT; /* ca tag */
+	c->operand[6] = 0; /* more/last */
+	/* Use three bytes for length field in case length > 127 */
+	c->operand[10] = list_management;
+	c->operand[11] = 0x01; /* pmt_cmd=OK_descramble */
+
+	/* TS program map table */
+
+	c->operand[12] = 0x02; /* Table id=2 */
+	c->operand[13] = 0x80; /* Section syntax + length */
+
+	c->operand[15] = msg[1]; /* Program number */
+	c->operand[16] = msg[2];
+	c->operand[17] = msg[3]; /* Version number and current/next */
+	c->operand[18] = 0x00; /* Section number=0 */
+	c->operand[19] = 0x00; /* Last section number=0 */
+	c->operand[20] = 0x1f; /* PCR_PID=1FFF */
+	c->operand[21] = 0xff;
+	c->operand[22] = (program_info_length >> 8); /* Program info length */
+	c->operand[23] = (program_info_length & 0xff);
+
+	/* CA descriptors at programme level */
+	read_pos = 6;
+	write_pos = 24;
+	if (program_info_length > 0) {
+		pmt_cmd_id = msg[read_pos++];
+		if (pmt_cmd_id != 1 && pmt_cmd_id != 4)
+			dev_err(fdtv->device,
+				"invalid pmt_cmd_id %d\n", pmt_cmd_id);
+		if (program_info_length > sizeof(c->operand) - 4 - write_pos) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		memcpy(&c->operand[write_pos], &msg[read_pos],
+		       program_info_length);
+		read_pos += program_info_length;
+		write_pos += program_info_length;
+	}
+	while (read_pos < length) {
+		c->operand[write_pos++] = msg[read_pos++];
+		c->operand[write_pos++] = msg[read_pos++];
+		c->operand[write_pos++] = msg[read_pos++];
+		es_info_length =
+			((msg[read_pos] & 0x0f) << 8) + msg[read_pos + 1];
+		read_pos += 2;
+		if (es_info_length > 0)
+			es_info_length--; /* Remove pmt_cmd_id */
+		c->operand[write_pos++] = es_info_length >> 8;
+		c->operand[write_pos++] = es_info_length & 0xff;
+		if (es_info_length > 0) {
+			pmt_cmd_id = msg[read_pos++];
+			if (pmt_cmd_id != 1 && pmt_cmd_id != 4)
+				dev_err(fdtv->device, "invalid pmt_cmd_id %d at stream level\n",
+					pmt_cmd_id);
+
+			if (es_info_length > sizeof(c->operand) - 4 -
+					     write_pos) {
+				ret = -EINVAL;
+				goto out;
+			}
+
+			memcpy(&c->operand[write_pos], &msg[read_pos],
+			       es_info_length);
+			read_pos += es_info_length;
+			write_pos += es_info_length;
+		}
+	}
+	write_pos += 4; /* CRC */
+
+	c->operand[7] = 0x82;
+	c->operand[8] = (write_pos - 10) >> 8;
+	c->operand[9] = (write_pos - 10) & 0xff;
+	c->operand[14] = write_pos - 15;
+
+	crc32_csum = crc32_be(0, &c->operand[10], c->operand[12] - 1);
+	c->operand[write_pos - 4] = (crc32_csum >> 24) & 0xff;
+	c->operand[write_pos - 3] = (crc32_csum >> 16) & 0xff;
+	c->operand[write_pos - 2] = (crc32_csum >>  8) & 0xff;
+	c->operand[write_pos - 1] = (crc32_csum >>  0) & 0xff;
+	pad_operands(c, write_pos);
+
+	fdtv->avc_data_length = ALIGN(3 + write_pos, 4);
+	ret = avc_write(fdtv);
+	if (ret < 0)
+		goto out;
+
+	if (r->response != AVC_RESPONSE_ACCEPTED) {
+		dev_err(fdtv->device,
+			"CA PMT failed with response 0x%x\n", r->response);
+		ret = -EACCES;
+	}
+out:
+	mutex_unlock(&fdtv->avc_mutex);
+
+	return ret;
+}
+```
+
+### Code Review
+
+1. `fdtv_ca_pmt` initializes `data_length` as int, instead of uint. 
+
+2. `fdtv_ca_pmt` have no overflow for `data_pos`, as it has a maximal value of `4 + 0x7f` , which is below 256. 
+
+However, it supports multiple bytes presentation for `data_length`. It therefore enables full control over `data_length`, even setting it to some negative values. 
+
+3. The following block seemed interesting:
+
+```c
+read_pos = 6;
+write_pos = 24;
+	if (program_info_length > 0) {
+		pmt_cmd_id = msg[read_pos++];
+		if (pmt_cmd_id != 1 && pmt_cmd_id != 4)
+			dev_err(fdtv->device,
+				"invalid pmt_cmd_id %d\n", pmt_cmd_id);
+		if (program_info_length > sizeof(c->operand) - 4 - write_pos) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		memcpy(&c->operand[write_pos], &msg[read_pos],
+		       program_info_length);
+		read_pos += program_info_length;
+		write_pos += program_info_length;
+	}
+```
+
+`program_info_length` is fully controlled by the input. 
+However, the `memcpy` exloit isn't trivial - as there is a check, asserting `program_info_length` does not exceeds a harsh limit, that is below the buffer `c->operand` size (509 bytes). 
+
+Note - `program_info_length` is a signed integer. 
+Meaning, we can set this to `-1`, the check would pass, and the `memcpy` would copy 0xfffffff bytes ...
+
+Except it doesn't work, as there is a positive value of `program_info_length` check. 
+
+However, note that `msg[]` buffer is defined as 256-bytes array, while the controlled copied length is up to `509 - 4 - 24` bytes.
+This means we can leak data beyond `msg[]`, to be stored within  the `c->operand[]` buffer, possibly yields an info leak primitive.
+
+That is an exactly *OOB read primitive*!
+
+4. Heap buffer overflow:
+
+```c
+while (read_pos < length) {
+		c->operand[write_pos++] = msg[read_pos++];
+		c->operand[write_pos++] = msg[read_pos++];
+		c->operand[write_pos++] = msg[read_pos++];
+    ...
+}
+```
+
+The `length` variable is fully controlled by the input, and so is the `msg` buffer.
+However, `c->operand` is 509 fixed-size bytes array, which is easly overflowed within this snippet. 
+
+
+5. An interesting `memcpy`:
+
+```c
+memcpy(&c->operand[write_pos], &msg[read_pos],
+			       es_info_length);
+```
+
+The maximal value of `es_info_length` is 0xfff, which is larger than the possible 509 bytes of `c->operand`. 
+
+But again, this is guarded with a correct sanity check for the size.
+
+
+### Patch
+
+1. Limiting high positive values for `data_length`:
+
+```c
+if (data_length > sizeof(msg->msg) - 4)
+  return -EINVAL;
+```
+
+Note it is still vulnerable for negative values. 
+
+2. Limiting `write_pos`:
+
+```c
+if (write_pos + 4 >= sizeof(c->operand) - 4)
+{
+  return -EINVAL;
+}
+```
+
+3. And few more, not too interesting, sanity checks.
+
+## Extra CVEs For Learning
+
+```bash
+CVE-2021-43304
+CVE-2021-1732 
+CVE-2020-0687 
+CVE-2021-31320 
+CVE-2021-1732
+CVE-2020-16010
+CVE-2020-1054 
+CVE-2020-5734 
+CVE-2019-2552 
+CVE-2020-1117 
+CVE-2021-34423 
+```
+
+And [this][project-zero-heap]. 
+
+[project-zero-heap]: https://googleprojectzero.blogspot.com/2019/08/in-wild-ios-exploit-chain-1.html
