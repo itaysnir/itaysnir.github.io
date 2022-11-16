@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Networking Kernel Configuration Notes"
+title:  "Kernel Networking Configuration Notes"
 date:   2022-11-07 19:59:43 +0300
 categories: jekyll update
 ---

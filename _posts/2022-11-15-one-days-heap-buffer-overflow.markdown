@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "One Days - Heap Buffer Overflows"
-date:   2022-11-16 19:59:43 +0300
+date:   2022-11-15 19:59:43 +0300
 categories: jekyll update
 ---
 
