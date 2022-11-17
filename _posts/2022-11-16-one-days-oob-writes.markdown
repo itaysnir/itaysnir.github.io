@@ -123,29 +123,23 @@ int ParseBlendVToHOrigin(void *arg) {
 
 ### Code Review
 
-0. Uninitialized local buffers `ptrs, values`.
+1. Uninitialized local buffers `ptrs, values`.
 
-1. Since `g_font->numMasters` is controlled, we control the loop iteration count.
-
-Note `i` is defined as a signed integer (so there might have been integer overflow). 
-
-However, the iteration count is still limited to `0 <= num <= 16`.
-
-There is a clear OOB write, as `ptrs` is an array of only two pointers. 
-
-Note there is also possible OOB read of the source `SomeArray[]`, depending on its size. However, this array is not attacker-controlled. 
-
+2. Since `g_font->numMasters` is controlled, we control the loop iteration count.\
+Note `i` is defined as a signed integer (so there might have been integer overflow). \
+However, the iteration count is still limited to `0 <= num <= 16`.\
+There is a clear OOB write, as `ptrs` is an array of only two pointers. \
+Note there is also possible OOB read of the source `SomeArray[]`, depending on its size. However, this array is not attacker-controlled. \
 By setting the iteration count to `numMasters >= 3`, attacker may override memory beyond `ptrs[]`. (Note this is compiler-dependent, as the locals order on the stack may be opposite. Usually MSVC have reverse locals order compares to gcc).
 
-2. `values_read` is defined as int, instead of uint. 
+3. `values_read` is defined as int, instead of uint. 
 
-3. The second loop allows controlling the exact content of `ptrs` array.
+4. The second loop allows controlling the exact content of `ptrs` array.
 
-`values` is controlled by `GetOpenFixedArray`, and there is another OOB write as `numMasters` is attacker-controlled.
-
+`values` is controlled by `GetOpenFixedArray`, and there is another OOB write as `numMasters` is attacker-controlled. \
 Therefore there is an OOB for the `values` array. 
 
-3. The last loop allows OOB write of controlled data, `values`, to the return address, which is beyond `ptrs`. 
+5. The last loop allows OOB write of controlled data, `values`, to the return address, which is beyond `ptrs`. 
 
 ### Patch
 
@@ -248,25 +242,20 @@ int main(int argc, char *argv[]){
 1. No check for `open` success value.
 
 2. `read_verify` - partially controlled stack buffer overflow. 
-A `sprintf()` is being used, for a buffer of length 150 bytes. 
-
-The longest entered string is about 50 bytes: `"Error reading header / image subheader data lengths"`.
-
+A `sprintf()` is being used, for a buffer of length 150 bytes. \
+The longest entered string is about 50 bytes: `"Error reading header / image subheader data lengths"`. \
 Moreover, every `%ld` specifier may take up to 19 bytes, due to largest possible value of `9223372036854775807`. 
 
-3. Integer overflow that can lead to heap under-allocation:
-
+3. Integer overflow that can lead to heap under-allocation: \
 Since attacker may control `number_of_DESs`, it may tweak the `malloc` call:
 
 ```c
 malloc(sizeof(segment_info_type) * number_of_DESs);
 ```
 
-In case `sizeof(segment_info_type) * number_of_DESs` overflows, for example `sizeof() == 16` and `number == 0x10000000`, it will result with `malloc(0)`, hence malloc returning a zero-length buffer, allowing easy heap buffer overflow.
-
-Note this isn't trivialally exploitable, as only the first 3 bytes of the file serves as the length, hence resulting with maximal length of `0x00ffffff`. 
-In case `sizeof(segment_info_type) > 16`, this IS exploitable tho. 
-
+In case `sizeof(segment_info_type) * number_of_DESs` overflows, for example `sizeof() == 16` and `number == 0x10000000`, it will result with `malloc(0)`, hence malloc returning a zero-length buffer, allowing easy heap buffer overflow. \
+Note this isn't trivialally exploitable, as only the first 3 bytes of the file serves as the length, hence resulting with maximal length of `0x00ffffff`. \
+In case `sizeof(segment_info_type) > 16`, this IS exploitable tho. \
 Another possibilty is to insert huge `number_of_DESs` (up to `0x00ffffff`), as there is no size check at all, and perform huge buffer allocation.
 
 
@@ -276,10 +265,8 @@ Another possibilty is to insert huge `number_of_DESs` (up to `0x00ffffff`), as t
 read_verify(hNITF, sBuffer, 13 * number_of_DESs);
 ```
 
-Like previously, may set `number_of_DESs` so that overflow would occur, and it will verify 0 bytes, and the check would pass.
-
-Moreover, `sBuffer` is a fixed-size buffer, while `number_of_DESs` is controlled. 
-
+Like previously, may set `number_of_DESs` so that overflow would occur, and it will verify 0 bytes, and the check would pass. \
+Moreover, `sBuffer` is a fixed-size buffer, while `number_of_DESs` is controlled. \
 Trivial buffer OOB write. 
 
 5. OOB Write, exploitable in case of an under-allocated heap memory for `DES_info`:
@@ -301,15 +288,12 @@ for (x = 0; x < number_of_DESs; x++) {
 	        }
 ```
 
-`number_of_DESs` is fully controlled, and contains some positive value.
-
-In case of an under-allocation of the heap (due to integer overflow), `DES_info` will be overflowed by attacker-controlled input (as `Gstr` is crafted by the file's content).
-
+`number_of_DESs` is fully controlled, and contains some positive value. \
+In case of an under-allocation of the heap (due to integer overflow), `DES_info` will be overflowed by attacker-controlled input (as `Gstr` is crafted by the file's content). \
 
 6. OOB read - 
 
-`number_of_DESs` is controlled, and `temp = sBuffer` is a fixed-size static buffer.
-
+`number_of_DESs` is controlled, and `temp = sBuffer` is a fixed-size static buffer. \
 For large `number_of_DESs` value, `temp` would be increased over and over, yielding OOB read towards the `Gstr` buffer, hence towards `DES_info`.
 
 ### Patch
