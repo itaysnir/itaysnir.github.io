@@ -451,3 +451,302 @@ if ((uptr + NS_RRFIXEDSZ < uncomp_end))
 
 ### Code
 
+```c
+////ACID: NV Var data returned in PerformanceVariable
+////NOT ACID: Variables named *Guid
+//
+// Update S3 boot records into the basic boot performance table.
+//
+VarSize = sizeof (PerformanceVariable);
+Status = VariableServices->GetVariable(VariableServices,
+                                       EFI_FIRMWARE_PERFORMANCE_VARIABLE_NAME,
+                                       &gEfiFirmwarePerformanceGuid,
+                                       NULL,
+                                       &VarSize,
+                                       &PerformanceVariable);
+if (EFI_ERROR (Status)) {
+	return Status;
+}
+BootPerformanceTable = (UINT8*) (UINTN)PerformanceVariable.BootPerformanceTablePointer;
+//
+// Dump PEI boot records
+//
+FirmwarePerformanceTablePtr = (BootPerformanceTable + sizeof(BOOT_PERFORMANCE_TABLE));
+
+GuidHob = GetFirstGuidHob(&gEdkiiFpdtExtendedFirmwarePerformanceGuid);
+
+while (GuidHob != NULL) {
+	FirmwarePerformanceData = GET_GUID_HOB_DATA(GuidHob);
+	PeiPerformanceLogHeader = (FPDT_PEI_EXT_PERF_HEADER *)FirmwarePerformanceData;
+	CopyMem(FirmwarePerformanceTablePtr,
+			FirmwarePerformanceData + sizeof (FPDT_PEI_EXT_PERF_HEADER),
+			(UINTN)(PeiPerformanceLogHeader->SizeOfAllEntries));
+
+	GuidHob = GetNextGuidHob(&gEdkiiFpdtExtendedFirmwarePerformanceGuid, GET_NEXT_HOB(GuidHob));
+	FirmwarePerformanceTablePtr += (UINTN)(PeiPerformanceLogHeader->SizeOfAllEntries);
+}
+//
+// Update Table length.
+//
+((BOOT_PERFORMANCE_TABLE *) BootPerformanceTable)->Header.Length =
+		(UINT32)((UINTN)FirmwarePerformanceTablePtr - (UINTN)BootPerformanceTable);
+```
+
+### Code Review
+
+1. OOB Write - 
+
+Attacker may control the pointers `BootPerformanceTable` and `FirmwarePerformanceTablePtr`, which is the destination of the `CopyMem` call. \
+Note this isn't attacker controlled data.
+
+2. Another OOB Write - 
+
+The last write enables write of the value of at least `sizeof(BOOT_PERFORMANCE_TABLE)` to any address. 
+
+### Patch
+
+Refactored all of this crappy mechanism. 
+
+
+## CVE-2022-25636 - Linux Kernel nft_fwd_dup_netdev_offload
+
+Netfilter is a LKM that provides firewall, NAT, packet managing for linux. 
+
+Commonly interacted via the iptables mechanism.
+
+The `nft` user app, allows specifying a set of firewall rules. 
+These rules are parsed and handled by the kernel module. 
+
+### Code
+
+```c
+struct flow_action {
+	unsigned int               num_entries;
+	struct flow_action_entry   entries[];
+};
+
+struct flow_rule {
+	struct flow_match          match;
+	struct flow_action         action;
+};
+
+struct nft_flow_rule {
+	__be16                     proto;
+	struct nft_flow_match      match;
+	struct flow_rule           *rule;
+};
+
+struct nft_offload_ctx {
+	struct {
+		enum nft_offload_dep_type   type;
+		__be16                      l3num;
+		u8                          protonum;
+	} dep;
+	unsigned int               num_actions;
+	struct net                 *net;
+	struct nft_offload_reg     regs[NFT_REG32_15 + 1];
+};
+
+/**
+ * struct_size() - Calculate size of structure with trailing array.
+ * @p: Pointer to the structure.
+ * @member: Name of the array member.
+ * @count: Number of elements in the array.
+ *
+ * Calculates size of memory needed for structure @p followed by an
+ * array of @count number of @member elements.
+ *
+ * Return: number of bytes needed or SIZE_MAX on overflow.
+ */
+#define struct_size(p, member, count)					\
+	__ab_c_size(count,						\
+		    sizeof(*(p)->member) + __must_be_array((p)->member),\
+		    sizeof(*(p)))
+
+#define NFT_OFFLOAD_F_ACTION	(1 << 0)
+
+struct flow_rule *flow_rule_alloc(unsigned int num_actions)
+{
+	struct flow_rule *rule;
+	int i;
+	// XENO: allocates space for the rule->action.entries[num_actions] array
+	rule = kzalloc(struct_size(rule, action.entries, num_actions),
+		       GFP_KERNEL);
+	if (!rule)
+		return NULL;
+
+	rule->action.num_entries = num_actions;
+	/* Pre-fill each action hw_stats with DONT_CARE.
+	 * Caller can override this if it wants stats for a given action.
+	 */
+	for (i = 0; i < num_actions; i++)
+		rule->action.entries[i].hw_stats = FLOW_ACTION_HW_STATS_DONT_CARE;
+
+	return rule;
+}
+
+static struct nft_flow_rule *nft_flow_rule_alloc(int num_actions)
+{
+	struct nft_flow_rule *flow;
+
+	flow = kzalloc(sizeof(struct nft_flow_rule), GFP_KERNEL);
+	if (!flow)
+		return NULL;
+
+	flow->rule = flow_rule_alloc(num_actions);
+	if (!flow->rule) {
+		kfree(flow);
+		return NULL;
+	}
+
+	flow->rule->match.dissector	= &flow->match.dissector;
+	flow->rule->match.mask		= &flow->match.mask;
+	flow->rule->match.key		= &flow->match.key;
+
+	return flow;
+}
+
+static inline struct nft_expr *nft_expr_first(const struct nft_rule *rule)
+{
+	return (struct nft_expr *)&rule->data[0];
+}
+
+static inline struct nft_expr *nft_expr_last(const struct nft_rule *rule)
+{
+	return (struct nft_expr *)&rule->data[rule->dlen];
+}
+
+static inline bool nft_expr_more(const struct nft_rule *rule,
+				 const struct nft_expr *expr)
+{
+	return expr != nft_expr_last(rule) && expr->ops;
+}
+
+
+int nft_fwd_dup_netdev_offload(struct nft_offload_ctx *ctx,
+			       struct nft_flow_rule *flow,
+			       enum flow_action_id id, int oif)
+{
+	struct flow_action_entry *entry;
+	struct net_device *dev;
+
+	/* nft_flow_rule_destroy() releases the reference on this device. */
+	dev = dev_get_by_index(ctx->net, oif);
+	if (!dev)
+		return -EOPNOTSUPP;
+
+	entry = &flow->rule->action.entries[ctx->num_actions++];
+	entry->id = id;
+	entry->dev = dev;
+
+	return 0;
+}
+
+static inline void *nft_expr_priv(const struct nft_expr *expr)
+{
+	return (void *)expr->data;
+}
+
+static int nft_dup_netdev_offload(struct nft_offload_ctx *ctx,
+				  struct nft_flow_rule *flow,
+				  const struct nft_expr *expr)
+{
+	const struct nft_dup_netdev *priv = nft_expr_priv(expr); // XENO: assume priv != ACID
+	int oif = ctx->regs[priv->sreg_dev].data.data[0];
+
+	return nft_fwd_dup_netdev_offload(ctx, flow, FLOW_ACTION_MIRRED /*5*/, oif);
+}
+
+////ACID: rule
+struct nft_flow_rule *nft_flow_rule_create(struct net *net,
+					   const struct nft_rule *rule)
+{
+	struct nft_offload_ctx *ctx;
+	struct nft_flow_rule *flow;
+	int num_actions = 0, err;
+	struct nft_expr *expr;
+
+	expr = nft_expr_first(rule);
+	while (nft_expr_more(rule, expr)) {
+		if (expr->ops->offload_flags & NFT_OFFLOAD_F_ACTION)
+			num_actions++;
+
+		expr = nft_expr_next(expr);
+	}
+
+	if (num_actions == 0)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	flow = nft_flow_rule_alloc(num_actions);
+	if (!flow)
+		return ERR_PTR(-ENOMEM);
+
+	expr = nft_expr_first(rule);
+
+	ctx = kzalloc(sizeof(struct nft_offload_ctx), GFP_KERNEL);
+	if (!ctx) {
+		err = -ENOMEM;
+		goto err_out;
+	}
+	ctx->net = net;
+	ctx->dep.type = NFT_OFFLOAD_DEP_UNSPEC;
+
+	while (nft_expr_more(rule, expr)) {
+		if (!expr->ops->offload) {
+			err = -EOPNOTSUPP;
+			goto err_out;
+		}
+		err = expr->ops->offload(ctx, flow, expr); //XENO: Calls nft_dup_netdev_offload()
+		if (err < 0)
+			goto err_out;
+
+		expr = nft_expr_next(expr);
+	}
+	nft_flow_rule_transfer_vlan(ctx, flow);
+
+	flow->proto = ctx->dep.l3num;
+	kfree(ctx);
+
+	return flow;
+err_out:
+	kfree(ctx);
+	nft_flow_rule_destroy(flow);
+
+	return ERR_PTR(err);
+}
+```
+
+### Code Review
+
+1. `nft_flow_rule_create` receives `rule` as a userland data. 
+
+`expr` states the current processed expression, which is also controlled by the user.
+
+`int num_actions` also controlled, but defined as a signed int instead of uint. 
+Note that `flow_rule_alloc()` implicitly converts it to uint. 
+
+2. OOB write
+
+Attacker may control the size of the allocated `flow` pointer, by setting `num_actions` to some low value.
+This results with very small allocated chunk for `flow->rule->action.entries`. 
+
+For example, setting many expressions - but most of them dont have the `NFT_OFFLOAD_F_ACTION` flag enabled.
+
+Afterwards, each `expr` issues `expr->ops->offload`, triggering many calls for `nft_dup_netdev_offload()`.
+
+Then, `nft_fwd_dup_netdev_offload` is called, triggering:
+
+```c
+entry = &flow->rule->action.entries[ctx->num_actions++];
+entry->id = id;
+entry->dev = dev;
+```
+
+For *every* expression within the rule, not only actions. Meaning - `ctx->num_actions` can grow unbounded. 
+
+That results with an OOB write - as `entry` is initialzied by some overflowed address.
+`entry->id , entry->dev` content are overwritten, according to the values within `id , dev`. 
+
+### Patch
+
+The while loop counting `num_actions` was changed, and instead of using an attacker-controlled flag, it counts `actions`.
