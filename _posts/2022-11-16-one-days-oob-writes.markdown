@@ -20,7 +20,7 @@ ptr = ACID
 *ptr = ACID
 ```
 
-Note: there are cases where OOB is way stronger than regular BOF.
+Note: there are cases where OOB is way stronger than regular BOF. \
 For example, in case of a canary presence - OOB write enables direct assignment of the return address, without corrupting the canary. 
 
 ## CVE-2019-10540 - Qualcomm Baseband WiFi
@@ -301,5 +301,153 @@ For large `number_of_DESs` value, `temp` would be increased over and over, yield
 None.
 
 
-## CVE-2020-27930 - Apple Fonts - libType1Scaler
+## CVE-2020-27930 - Apple Fonts - libType1Scaler.dylib
+
+### Code
+
+```c
+int op_stk[64];
+int *op_sp;
+
+int n = POP();
+
+op_sp -= n;
+
+if (op_sp < &op_stk[0]>)
+{ exit(1);}
+...
+```
+
+### Code Review
+
+1. The number of elements of the stack, `n`, is controlled by the attacker. It determines the value of `op_sp`, which is also attacker-controlled. 
+
+2. While there is correct lower bounds check, there is no signess check for n. 
+
+Therfore, it is possible to set negative `n` value, and actually increase `op_sp`, without any sanity check being made.
+
+
+### Patch
+
+No released patch.
+
+## CVE-2021-26675 - T-BONE
+
+```C
+static char *uncompress(int16_t field_count, 	/*KC: ACID from packet header */
+                        char *start,            /*KC: Starting header of ACID input packet */
+                        char *end,              /*KC: End of ACID input packet */
+                        char *ptr,              /*KC: Current offset in ACID input packet */
+                        char *uncompressed,     /*KC: Base of [1025] output buffer */
+                        int uncomp_len,         /*KC: Hardcoded 1025 */
+                        char **uncompressed_ptr)/*KC: Offset to end of uncompressed data */
+{
+	char *uptr = *uncompressed_ptr; /* position in result buffer */
+
+	debug("count %d ptr %p end %p uptr %p", field_count, ptr, end, uptr);
+
+	while (field_count-- > 0 && ptr < end) {
+		int dlen;		/* data field length */
+		int ulen;		/* uncompress length */
+		int pos;		/* position in compressed string */
+		char name[NS_MAXLABEL]; /* tmp label */ /*KC: fixed-size 63 byte buffer*/
+		uint16_t dns_type, dns_class;
+		int comp_pos;
+
+		if (!convert_label(start, end, ptr, name, NS_MAXLABEL,
+					&pos, &comp_pos))
+			goto out;
+
+		/*
+		 * Copy the uncompressed resource record, type, class and \0 to
+		 * tmp buffer.
+		 */
+
+		ulen = strlen(name);
+		strncpy(uptr, name, uncomp_len - (uptr - uncompressed)); /*KC: 1025 - (current offset-base) */
+
+		debug("pos %d ulen %d left %d name %s", pos, ulen,
+			(int)(uncomp_len - (uptr - uncompressed)), uptr);
+
+		uptr += ulen;
+		*uptr++ = '\0';
+
+		ptr += pos;
+
+		/*
+		 * We copy also the fixed portion of the result (type, class,
+		 * ttl, address length and the address)
+		 */
+		memcpy(uptr, ptr, NS_RRFIXEDSZ); /*KC: NS_RRFIXEDSZ = 10*/
+
+		dns_type = uptr[0] << 8 | uptr[1];
+		dns_class = uptr[2] << 8 | uptr[3];
+
+		if (dns_class != ns_c_in)
+			goto out;
+
+		ptr += NS_RRFIXEDSZ;
+		uptr += NS_RRFIXEDSZ
+```
+
+### Code Review
+
+1. OOB Write - `name` is 63 bytes array, with fully ACID data.
+Therefore, attacker may set these 63 bytes to be non null-terminated, as `strlen` stops its iteration only if `\x00` is occured. 
+
+It means that `ulen` may actually exceed 63 bytes.
+
+```c
+ulen = strlen(name);
+```
+
+Note - this actually depends on the implementation of `convert_label`: in case it checks the `name` is actually null-termination, the above doesn't hold, and `ulen` would be up to 62 bytes. 
+
+
+4. OOB Write - 
+
+```c
+ulen = strlen(name);
+strncpy(uptr, name, uncomp_len - (uptr - uncompressed));
+
+uptr += ulen;
+*uptr++ = '\0';
+
+ptr += pos;
+
+memcpy(uptr, ptr, NS_RRFIXEDSZ); /*KC: NS_RRFIXEDSZ = 10*/
+```
+
+Since we control `ptr` content and `field_count`, we can fill the `uptr` array for up to 1025 bytes via multiple iterations to `name` copying. 
+
+At a first glance this seems OK - as it copies up to maximum of 1025 bytes.
+
+However - instead of advancing `uptr` by the amount of copied data (`uncomp_len - (uptr - uncompressed)`), it is advanced by `ulen`, regardless of the copied amount of bytes.
+
+For the last iteration, attacker may set the amount of copied data to exactly 0 bytes, while setting `ulen` to 62 bytes.
+This allows OOB write for the `uptr` array. 
+
+Another problem is that a second `memcpy` is being issued, without any boundaries check. 
+
+It results with an overflow of `NS_RRFIXEDSZ` bytes.
+
+Last but not least, the next iteration will have a negative number of copied bytes, as now `uncomp_len - (uptr - uncompressed) < 0`, and results with an integer overflow.
+
+This leads to an unbounded overflow. 
+
+### Patch
+
+```c
+char * const uncomp_end = uncompressed + uncomp_len - 1;
+
+if ((uptr + ulen + 1) > uncomp_end)
+  goto out;
+
+if ((uptr + NS_RRFIXEDSZ < uncomp_end))
+  goto out;
+```
+
+## CVE-2021-28216 - UEFI FirmwarePerformance NV VAR
+
+### Code
 
