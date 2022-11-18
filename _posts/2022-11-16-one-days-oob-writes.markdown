@@ -750,3 +750,22 @@ That results with an OOB write - as `entry` is initialzied by some overflowed ad
 ### Patch
 
 The while loop counting `num_actions` was changed, and instead of using an attacker-controlled flag, it counts `actions`.
+
+
+## UBSan
+
+Undefined-behavior sanitizer. 
+
+Similar to ASan, find bugs in runtime. Its overhead is small, so it might be even recommended to run it in production build.
+
+### Bounds sanitizer
+
+Checks for OOB read / writes. 
+Just add `-fsanitize=bounds` to add the runtime checks 
+
+### Pointer Overflow
+
+Checks at runtime for wraps around, for example 64-bit addrs wraps. 
+(This may result by an access to lower addresses from the base pointer). 
+
+Add `-fsanitize=pointer-overflow` for these runtime checks. 
