@@ -306,4 +306,158 @@ Checks for `ip->udp_len` were added: both lower and upper bounds.
 
 ## CVE-2020-11901 - Part of Ripple20
 
+These are actually 4 vulnerabilities. 
+I will focus here on vulnerability #2 
+
 ### Code
+
+```c
+//ACID: RDLENGTH, resourceRecordAfterNamePtr, dnsHeaderPtr
+if (RDLENGTH <= remaining_size) {
+	/* compute the next resource record pointer based on the RDLENGTH */
+	labelEndPtr = resourceRecordAfterNamePtr + 10 + RDLENGTH;
+	/* type: MX */
+	if (cacheEntryQueryType == DNS_TYPE_MX && rrtype == DNS_TYPE_MX) {
+		addr_info = tfDnsAllocAddrInfo();
+		if (addr_info != NULL && RDLENGTH >= 2) {
+			/* copy preference value of MX record */
+			memcpy(&addr_info->ai_mxpref,resourceRecordAfterNamePtr + 10, 2);
+			/* compute the length of the MX hostname */
+			labelLength = tfDnsExpLabelLength(resourceRecordAfterNamePtr + 0xc, dnsHeaderPtr, labelEndPtr);
+			addr_info->ai_mxhostname = NULL;
+			if (labelLength != 0) {
+				/* allocate buffer for the expanded name */
+				asciiPtr = tfGetRawBuffer((uint)labelLength);
+				addr_info->ai_mxhostname = asciiPtr;
+				if (asciiPtr != NULL) {
+					/* copy MX hostname to `asciiPtr` as ASCII */
+					tfDnsLabelToAscii(resourceRecordAfterNamePtr + 0xc, asciiPtr, dnsHeaderPtr, 1, 0);
+					/* ... */
+				}
+				/* ... */
+			}
+			/* ... */
+		}
+	/* ... */
+	}
+}
+
+tt16Bit tfDnsExpLabelLength(tt8BitPtr labelPtr, tt8BitPtr pktDataPtr, tt8BitPtr labelEndPtr){
+	tt8Bit currLabelLength;
+	tt16Bit i = 0, totalLength = 0;
+	tt8BitPtr newLabelPtr;
+
+	while (&labelPtr[i] < labelEndPtr && labelPtr[i] != 0) {
+		currLabelLength = labelPtr[i];
+		if ((currLabelLength & 0xc0) == 0) {
+			totalLength += currLabelLength + 1;
+			i += currLabelLength + 1;
+		} else {
+			if (&labelPtr[i+1] < labelEndPtr) {
+				newLabelPtr = pktDataPtr + (((currLabelLength & 0x3f) << 8) | labelPtr[i+1]);
+				if (newLabelPtr < labelPtr) {
+					labelPtr = newLabelPtr;
+					i = 0;
+					continue;
+				}
+			}
+		return 0;
+		}
+	}
+	return totalLength;
+}
+```
+
+### Code Review
+
+1. Focusing on `tfDnsExpLabelLength`: we fully control `labelPtr` and `pktDatPtr` content, as well as the value of `labelEndPtr`. 
+
+Therefore, by choosing a large value for `RDLENGTH` (depends on the value of `remaining_size`), or just not setting the `\x00` byte at the end of the label, the while loop won't stop. 
+
+2. Integer overflows -
+
+`currLabelLength` is defined as 8-bit variable, `totalLength` as 16-bit variable.
+Therefore, it is not trivial at all to overflow `totalLength`, since there is a maximum length of DNS packet (1460 bytes!).  
+
+```c
+totalLength += currLabelLength + 1;
+i += currLabelLength + 1;
+```
+
+My idea is abit tricky, and utilizes the compressed pointers mechanism. 
+
+The following packet structure may cause `totalLength` to overflow:
+
+We would insert large labels, and at the end a compressed pointer.
+This compressed pointer would point backwards to the start of the label, at an offset of one (so there won't be any "infinite loop").
+
+```c
+size  label_content   backwards_pointer
+\x3f  \x3f\x3f...     \xc0 \x0e 
+```
+
+The trick is that the backwards pointer actually self-references its own label, hence making a very large chunk. 
+
+The vulnerability slides from blackhat explains the 2D matrix array layout more in-depth. 
+
+This yields a low `totalLength` value, hence causing `tfGetRawBuffer` to underflow. 
+
+### Patch
+
+No released patch.
+
+
+## CVE-2020-16225 - TPEditor
+
+### Code
+
+```c
+////ACID: The data read from staFileHandler
+FILE *staFileHandler; //File handler is valid and already points to 0x200 location 
+                      //in .sta file being loaded.
+size_t x;
+size_t y;
+size_t allocSize;
+void *memoryAllocation;
+
+fread(&x, 4, 1, staFileHandler);
+fread(&y, 4, 1, staFileHandler);
+allocSize = y - x;
+memoryAllocation = VirtualAlloc(0, allocSize, 0x3000, 4);
+fread(memoryAllocation+x, 1, allocSize, staFileHandler);
+```
+
+### Code Review
+
+1. `allocSize` defined as an unsigned int, yet is the result of user-controlled numbers substraction.
+
+Therefore, `allocSize` is fully controlled. 
+
+However, note that both `VirtualAlloc` and `fread` treats it as a `size_t`, therefore it will allocate and copy the exact same amount of bytes, regardless of the overflow.
+
+2. The cool trick here is the usage of the `x` variable.
+
+There is an integer overflow within this calculation: 
+
+```c
+fread(memoryAllocation+x, 1, allocSize, staFileHandler);
+```
+
+Since `x` is user-controlled, user may enter arbitrary value, so the addition may wrap-around, hence allowing OOB write to even lower addresses. 
+
+Another trick utilizes the fact that `VirtualAlloc` return value isn't checked.
+
+The idea is to make the value of `allocSize` maximal (0xffffffff), so that `VirtualAlloc` call fails, and return a `NULL = 0`.
+
+That way, the returned address isn't randomized, and `x` would simply determine the OOB address we would like to write to. 
+
+Note that read of 0xffffffff bytes from file does not crash. 
+
+### Patch 
+
+No released patch.
+
+
+## CVE-2020-17443 - Part of Amnesia:33
+
+
