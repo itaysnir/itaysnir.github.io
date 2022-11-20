@@ -460,4 +460,446 @@ No released patch.
 
 ## CVE-2020-17443 - Part of Amnesia:33
 
+### Code
 
+```c
+////ACID: echo
+static int pico_icmp6_send_echoreply(struct pico_frame *echo)
+{
+    struct pico_frame *reply = NULL;
+    struct pico_icmp6_hdr *ehdr = NULL, *rhdr = NULL;
+    struct pico_ip6 src;
+    struct pico_ip6 dst;
+
+    reply = pico_proto_ipv6.alloc(&pico_proto_ipv6, echo->dev, (uint16_t)(echo->transport_len));
+    if (!reply) {
+        pico_err = PICO_ERR_ENOMEM;
+        return -1;
+    }
+
+    echo->payload = echo->transport_hdr + PICO_ICMP6HDR_ECHO_REQUEST_SIZE;
+    reply->payload = reply->transport_hdr + PICO_ICMP6HDR_ECHO_REQUEST_SIZE;
+    reply->payload_len = echo->transport_len;
+
+    ehdr = (struct pico_icmp6_hdr *)echo->transport_hdr;
+    rhdr = (struct pico_icmp6_hdr *)reply->transport_hdr;
+    rhdr->type = PICO_ICMP6_ECHO_REPLY;
+    rhdr->code = 0;
+    rhdr->msg.info.echo_reply.id = ehdr->msg.info.echo_reply.id;
+    rhdr->msg.info.echo_reply.seq = ehdr->msg.info.echo_request.seq;
+    memcpy(reply->payload, echo->payload, (uint32_t)(echo->transport_len - PICO_ICMP6HDR_ECHO_REQUEST_SIZE));
+    rhdr->crc = 0;
+    rhdr->crc = short_be(pico_icmp6_checksum(reply));
+    /* Get destination and source swapped */
+    memcpy(dst.addr, ((struct pico_ipv6_hdr *)echo->net_hdr)->src.addr, PICO_SIZE_IP6);
+    memcpy(src.addr, ((struct pico_ipv6_hdr *)echo->net_hdr)->dst.addr, PICO_SIZE_IP6);
+    pico_ipv6_frame_push(reply, &src, &dst, PICO_PROTO_ICMP6, 0);
+    return 0;
+}
+
+/* allocates an IPv6 packet without extension headers. If extension headers are needed,
+ * include the len of the extension headers in the size parameter. Once a frame acquired
+ * increment net_len and transport_hdr with the len of the extension headers, decrement
+ * transport_len with this value.
+ */
+static struct pico_frame *pico_ipv6_alloc(struct pico_protocol *self, struct pico_device *dev, uint16_t size)
+{
+    struct pico_frame *f = NULL;
+
+    IGNORE_PARAMETER(self);
+
+    if (0) {}
+#ifdef PICO_SUPPORT_6LOWPAN
+    else if (PICO_DEV_IS_6LOWPAN(dev)) {
+        f = pico_proto_6lowpan_ll.alloc(&pico_proto_6lowpan_ll, dev, (uint16_t)(size + PICO_SIZE_IP6HDR));
+    }
+#endif
+    else {
+#ifdef PICO_SUPPORT_ETH
+        f = pico_proto_ethernet.alloc(&pico_proto_ethernet, dev, (uint16_t)(size + PICO_SIZE_IP6HDR));
+#else
+        f = pico_frame_alloc(size + PICO_SIZE_IP6HDR + PICO_SIZE_ETHHDR);
+#endif
+    }
+
+    if (!f)
+        return NULL;
+
+    f->net_len = PICO_SIZE_IP6HDR;
+    f->transport_hdr = f->net_hdr + PICO_SIZE_IP6HDR;
+    f->transport_len = (uint16_t)size;
+
+    /* Datalink size is accounted for in pico_datalink_send (link layer) */
+    f->len =  (uint32_t)(size + PICO_SIZE_IP6HDR);
+
+    return f;
+}
+```
+
+### Code Review
+
+1. Integer overflows at `pico_ipv6_alloc`, for all of the `.alloc` calculations. 
+
+This may result with an under-allocation for `f`, hence yields an OOB write for the following attributes:
+
+```c
+f->net_len = PICO_SIZE_IP6HDR;
+f->transport_hdr = f->net_hdr + PICO_SIZE_IP6HDR;
+f->transport_len = (uint16_t)size;
+
+/* Datalink size is accounted for in pico_datalink_send (link layer) */
+f->len =  (uint32_t)(size + PICO_SIZE_IP6HDR);
+```
+
+Another integer overflow resides at the above line, adjusting the `len` field.
+
+2. Integer overflow that leads to heap buffer overflow:
+
+```c
+memcpy(reply->payload, echo->payload, (uint32_t)(echo->transport_len - PICO_ICMP6HDR_ECHO_REQUEST_SIZE));
+```
+
+### Patch
+
+Added a check for `echo->transport_len` value. 
+
+
+## CVE-2021-30860 - FORCEDENTRY (NSO IPhone Vuln)
+
+```c
+enum JBIG2SegmentType
+{
+    jbig2SegBitmap,
+    jbig2SegSymbolDict,
+    jbig2SegPatternDict,
+    jbig2SegCodeTable
+};
+
+////ACID: refSegs, nRefSegs
+void JBIG2Stream::readTextRegionSeg(unsigned int segNum, bool imm, bool lossless, unsigned int length, unsigned int *refSegs, unsigned int nRefSegs)
+{
+    JBIG2Segment *seg;
+    std::vector codeTables;
+    JBIG2SymbolDict *symbolDict;
+    JBIG2Bitmap **syms;
+    unsigned int huff;
+    unsigned int numSyms, symCodeLen;
+    unsigned int i, k, kk;
+
+    // ...
+
+    // get symbol dictionaries and tables
+    numSyms = 0;
+    for (i = 0; i < nRefSegs; ++i) {
+        if ((seg = findSegment(refSegs[i]))) {
+            if (seg->getType() == jbig2SegSymbolDict) {
+                numSyms += ((JBIG2SymbolDict *)seg)->getSize();
+            } else if (seg->getType() == jbig2SegCodeTable) {
+                codeTables.push_back(seg);
+            }
+        } else {
+            error(errSyntaxError, curStr->getPos(), "Invalid segment reference in JBIG2 text region");
+            return;
+        }
+    }
+
+    // ...
+
+    // get the symbol bitmaps
+    syms = (JBIG2Bitmap **)gmallocn(numSyms, sizeof(JBIG2Bitmap *));
+    if (numSyms > 0 && !syms) {
+        return;
+    }
+    kk = 0;
+    for (i = 0; i < nRefSegs; ++i) {
+        if ((seg = findSegment(refSegs[i]))) {
+            if (seg->getType() == jbig2SegSymbolDict) {
+                symbolDict = (JBIG2SymbolDict *)seg;
+                for (k = 0; k < symbolDict->getSize(); ++k) {
+                    syms[kk++] = symbolDict->getBitmap(k);
+                }
+            }
+        }
+    }
+```
+
+### Code Review
+
+1. Since `nRefSegs` is controlled, as well as `refSegs` is controlled, it is possible to forge an unbounded number of segments.
+
+This causes unbounded number of additions of the segment's size to `numSyms`:
+
+```c
+numSyms += ((JBIG2SymbolDict *)seg)->getSize();
+```
+
+Which eaily causes an integer overflow. 
+
+2. The integer overflow causes an heap under-allocation:
+
+```c
+syms = (JBIG2Bitmap **)gmallocn(numSyms, sizeof(JBIG2Bitmap *));
+```
+
+3. `syms` under-allocation results with an heap OOB write primitive, of controlled input:
+
+```c
+syms[kk++] = symbolDict->getBitmap(k);
+```
+
+### Patch
+
+No released patch.
+
+## CVE-2021-22636 - TI Memory Allocator
+
+One of BadAlloc family vulns.
+
+
+### Code
+
+```c
+int16_t _BundleCmdSignatureFile_Parse(
+    OtaArchive_BundleCmdTable_t *pBundleCmdTable,
+    uint8_t *pRecvBuf,    //XENO: ACID: TAR file received over network
+    int16_t RecvBufLen,   //XENO: SACI: Size of TAR file received over network
+    int16_t *ProcessedSize,
+    uint32_t SigFileSize, //XENO: ACID: Size from TAR file headers
+    uint8_t *pDigest)
+{
+    int16_t retVal = 0;
+    char *  pSig = NULL;
+
+    /* Get the entire signature file */
+    retVal = GetEntireFile(pRecvBuf, RecvBufLen, ProcessedSize, SigFileSize,
+                           &pSig);
+    if(retVal < 0)
+    {
+        return(retVal);
+    }
+    if(retVal == GET_ENTIRE_FILE_CONTINUE)
+    {
+        return(ARCHIVE_STATUS_BUNDLE_CMD_SIGNATURE_CONTINUE);
+    }
+
+    /* Verify the signature using ECDSA */
+    retVal = verifySignature(pSig, SigFileSize, pDigest);
+    if(retVal < 0)
+    {
+        _SlOtaLibTrace((
+                           "[_BundleCmdSignatureFile_Parse] "
+                           "signature verification failed!\r\n"));
+        return(retVal);
+    }
+
+    pBundleCmdTable->VerifiedSignature = 1;
+
+    return(ARCHIVE_STATUS_BUNDLE_CMD_SIGNATURE_DOWNLOAD_DONE);
+}
+int16_t GetEntireFile(uint8_t *pRecvBuf,
+                      int16_t RecvBufLen,
+                      int16_t *ProcessedSize,
+                      uint32_t FileSize,
+                      char **pFile)
+{
+    int16_t copyLen = 0;
+    static bool firstRun = TRUE;
+    static int16_t TotalRecvBufLen = 0;
+
+    if(firstRun)
+    {
+        TotalRecvBufLen = RecvBufLen;
+        firstRun = FALSE;
+        if(TotalRecvBufLen < FileSize)
+        {
+            /* Didn't receive the entire file in the first run. */
+            /* Allocate a buffer in the size of the entire file and fill
+                it in each round. */
+            pTempBuf = (char*)malloc(FileSize + 1);
+            if(pTempBuf == NULL)
+            {
+                /* Allocation failed, return error. */
+                return(-1);
+            }
+            memcpy(pTempBuf, (char *)pRecvBuf, RecvBufLen);
+            *ProcessedSize = RecvBufLen;
+
+            /* didn't receive the entire file, try in the next packet */
+            return(GET_ENTIRE_FILE_CONTINUE);
+        }
+        else
+        {
+            /* Received the entire file in the first run. */
+            /* No additional memory allocation is needed. */
+            *ProcessedSize = FileSize;
+            *pFile = (char *)pRecvBuf;
+        }
+    }
+    else
+    {
+        /* Avoid exceeding buffer size (FileSize + 1) */
+        if(RecvBufLen > ((FileSize + 1) - TotalRecvBufLen))
+        {
+            copyLen = ((FileSize + 1) - TotalRecvBufLen);
+        }
+        else
+        {
+            copyLen = RecvBufLen;
+        }
+
+        /* Copy the received buffer from where we stopped the previous copy */
+        memcpy(&(pTempBuf[TotalRecvBufLen]), (char *)pRecvBuf, copyLen);
+
+        *ProcessedSize = copyLen;
+        TotalRecvBufLen += copyLen;
+
+        if(TotalRecvBufLen < FileSize)
+        {
+            /* didn't receive the entire file, try in the next packet */
+            return(GET_ENTIRE_FILE_CONTINUE);
+        }
+
+        /* At this point we have the whole file */
+        *pFile = (char *)pTempBuf;
+    }
+
+    /* Set static variables to initial values to allow retry in 
+    case of a warning during the OTA process */
+    firstRun = TRUE;
+    TotalRecvBufLen = 0;
+
+    return(GET_ENTIRE_FILE_DONE);
+}
+void ATTRIBUTE *malloc(size_t size)
+{
+    Header *packet;
+
+    if (size == 0) {
+        errno = EINVAL;
+        return (NULL);
+    }
+
+    packet = (Header *)pvPortMalloc(size + sizeof(Header));
+
+    if (packet == NULL) {
+        errno = ENOMEM;
+        return (NULL);
+    }
+
+    packet->header.actualBuf = (void *)packet;
+    packet->header.size = size + sizeof(Header);
+
+    return (packet + 1);
+}
+```
+
+### Code Review
+
+1. This `malloc` implementation is pretty old, and contains no sanity checks for the input `size`.
+
+It allocates memory for both data chunk, as well as the header metadata, `sizeof(Header)`.
+
+This results with an integer overflow for the effective allocated memory size, issued by `pvPortMalloc()` (analogous to `__malloc_hook`).
+
+2. The above integer overflow may be triggered at the following `malloc` call:
+
+```c
+pTempBuf = (char*)malloc(FileSize + 1);
+if(pTempBuf == NULL)
+{
+    /* Allocation failed, return error. */
+    return(-1);
+}
+memcpy(pTempBuf, (char *)pRecvBuf, RecvBufLen);
+```
+
+As `FileSize` is user-controlled.
+Note that the extra integer overflow here isn't easily exploitable.
+
+This `malloc` version does not support with `size=0` allocations. 
+
+Therefore, passing `FileSize = 0xffffffff` would result with `malloc(0)`, which would fail to allocate the desired memory.
+
+The trick is to send `size = 0xffffffff`, and exploit `malloc`'s integer overflow. 
+
+3. This results with an under-allocation, leading to heap buffer overflow.
+
+### Patch
+
+`malloc` implementation was added an extra sanity check:
+
+```c
+allocSize = size + sizeof(Header);
+if (allocSize < size)
+	return NULL;
+```
+
+## Extra CVEs For Learning
+
+```bash
+CVE-2021-31956
+CVE-2022-0185
+CVE-2022-0545
+CVE-2021-30883
+CVE-2020-9852
+CVE-2021-30717
+CVE-2020-1350 "SIGRed" 
+CVE-2022-24354
+CVE-2020-16968
+```
+
+And [this][extra-cve]
+
+## Safe Math Sanity Checks
+
+### Anti Patterns
+
+```c
+if (a + b > c)  // a + b may wrap around. Also signess insanity checks.
+
+if (a > c - b)  // c - b may underflow
+
+if (a + b < a)  // signess may be problematic
+
+```
+
+### Compiler-Supported Safe Math
+
+It is acctually not trivial at all, considering all possible scenarios. 
+
+*Built-in compiler intrinsics* are here to help. 
+
+For example (both for clang and gcc):
+
+```c
+__builtin_add_overflow()
+__builtin_mul_overflow()
+__builtin_uadd_overflow()
+...
+```
+
+Trivial usage:
+
+```c
+unsigned int a = atoi(argv[1]);
+unsigned int b = atoi(argv[2]);
+unsigned int c; 
+bool overflowed = false;
+
+overflowed = __builtin_add_overflow(a, b, &c);
+if (overflowed)
+{
+	printf("INTEGER OVF\n");
+	return -1;
+}
+```
+
+In a similar manner, the Windows kernel has the `ntintsafe.h` header. 
+
+## UBSan for IOU
+
+`-fsanitize=integer` adds runtime checks for "suspicious" integer behavior at runtime. 
+
+Either by signed/unsigned overflows, shifts, divide by zero, truncation, implicit sign changes, etc. 
+
+[extra-cve]: https://fredericb.info/2020/06/exynos-usbdl-unsigned-code-loader-for-exynos-bootrom.html#exynos-usbdl-unsigned-code-loader-for-exynos-bootrom
