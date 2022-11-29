@@ -41,7 +41,6 @@ GRUB_CMDLINE_LINUX="noibrs noibpb mds=off tsx_async_abort=off nx_huge_pages=off 
 Afterwards, issue `update-grub`, and reboot the configured kernel. 
 Finally, read `/proc/cmdline` to verify the configuration have completed succesfully. 
 
-[cool-paper]: https://dl.acm.org/doi/10.1145/3341301.3359640
 
 
 ## Ethtool
@@ -92,4 +91,7 @@ Important note: some drivers don't register their IRQ numbers within `/proc/inte
 
 In such cases, their IRQ numbers can be found under `/sys/class/net/<interface>/device/msi_irqs`. 
 
-[more-reading]: https://greenhost.net/blog/2013/04/10/multi-queue-network-interfaces-with-smp-on-linux/
+For more reading, see [this][irq-affinity]
+
+[irq-affinity]: https://greenhost.net/blog/2013/04/10/multi-queue-network-interfaces-with-smp-on-linux/
+[cool-paper]: https://dl.acm.org/doi/10.1145/3341301.3359640
