@@ -47,6 +47,59 @@ Finally, read `/proc/cmdline` to verify the configuration have completed succesf
 
 The `ethtool` command allows querying and setting NIC driver configuration. 
 
+Both client and server interfaces should be configured via `ethtool`. 
+
+### Ring Buffer Size
+
+The inner socket ring buffer entries count, for both TX and RX, can be adjusted:
+
+```bash
+sudo ethtool -G eth4 rx 1024 tx 1024
+```
+
+This command sets both ring buffers to 1024 entries. 
+
+
+### LRO
+
+Stands for *large receive offload*. \
+This feature reassembles incoming packets into larger buffers. \
+These larger buffers are transmitted to the network stack of the host machine *at once*, leading to better utilization. 
+
+Note - it does *not* mean less packets are being processed. 
+
+For more reading about similar techniques, check [this][tcp-offload].
+
+The feature should be disabled for correct throughput tests (as it reduces dramatically the calculated bandwidth):
+
+```bash
+sudo ethtool -K eth4 lro off
+```
+
+### GRO
+
+Stands for *generic receive offload*, another offloading technique. \
+This feature reassembles small packets into larger onces - thus reducing the number of processed packets. 
+
+The key insight, is that GRO is protocol-dependent (there are many defined GRO types). 
+
+For example, *TCP/IPv4 GRO* for common TCP packets. 
+
+This feature should be enabled:
+
+```bash
+sudo ethtool -K eth4 gro on
+```
+
+### GSO
+
+Stands for *generic segmentation offload*. \
+
+
+### TSO
+
+
+### PFC
 
 
 ## IRQ Affinity
@@ -95,3 +148,4 @@ For more reading, see [this][irq-affinity]
 
 [irq-affinity]: https://greenhost.net/blog/2013/04/10/multi-queue-network-interfaces-with-smp-on-linux/
 [cool-paper]: https://dl.acm.org/doi/10.1145/3341301.3359640
+[tcp-offload]: https://en.wikipedia.org/wiki/TCP_offload_engine
