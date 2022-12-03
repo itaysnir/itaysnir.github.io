@@ -140,10 +140,11 @@ Therefore, for our big allocation, we would like to perform a wrap around, from 
 
 Meaning - allocation of `0xffffffff - 0x603020 + 0x602010 - 0x20`
 
-The trick is to leave `0x20` bytes for the top chunk. That way the last allocation points exactly towards the target address.
+The trick is to leave `0x20` bytes for next allocation. That way it will point exactly towards the target address.
 Since the lowest possible allocation for malloc is 24 bytes of data, and 8 bytes for the `size`, it yields a minimal chunk size of 32 bytes. 
 
-We *can* allocate these extra 0x20 bytes. However, it will require the exploit to fill about 0xffffffff bytes, and because some of the memory regions aren't mapped (or mapped to RODATA) - so it might lead to a segfault. 
+We *can* allocate these extra 0x20 bytes with a single `malloc`. \ 
+However, it will require the exploit to fill about 0xffffffff bytes, and because some of the memory regions aren't mapped (or mapped to RODATA) - it will lead to a segfault.
 
 POC code:
 
@@ -222,7 +223,7 @@ io.interactive()
 If the target address lays on the same heap as the corrupted top chunk, no need for heap address leak - as the allocation can wrap around the VA space back into the same heap. 
 
 Viable heap function pointer target would be the `__malloc_hook`.
-By overwriting this pointer with the address of `system`, then passing `/bin/sh` pointer an allocation size, would lead to code execution. 
+By overwriting this pointer with the address of `system`, then passing `/bin/sh` pointer as an allocation size, code execution would be achieved. 
 
 ## Mitigations
 
