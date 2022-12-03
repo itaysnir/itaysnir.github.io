@@ -40,7 +40,9 @@ The different mapped memory regions (such as heap) can be seen via `vmmap`.
 Issue `n` (next) to navigate to the next line, stepping over a function call. 
 
 Issue `vis` (vis_heap_chunks) to display the state of the heap chunks. \
-Pwndbg shows the different chunks types with different colors, which is extremely convenient. 
+Pwndbg shows the different chunks types with different colors, which is extremely convenient. \
+Another great command for learning about the heap's layout is `heap`. 
+
 
 ## Malloc Internals
 
