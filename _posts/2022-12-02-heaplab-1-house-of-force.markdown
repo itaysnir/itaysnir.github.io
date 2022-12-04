@@ -282,12 +282,12 @@ malloc(bin_sh, b"")
 
 ### Heap Target
 
-If the target address lays on the same heap as the corrupted top chunk, no need for heap address leak - as the allocation can wrap around the VA space back into the same heap. 
+If the target address lays on the same heap as the corrupted top chunk, no need for heap address leak - as the target address is relative to the top chunk address. 
 
 ### malloc_hook
 
-Viable heap function pointer target would be the `malloc_hook` family.
-By overwriting this pointer with the address of `system`, then passing `/bin/sh` pointer as an allocation size, code execution would be achieved. 
+Valuable heap function pointer targets would be the `malloc_hook` family.
+By overwriting such pointer with the address of `system`, then passing `/bin/sh` pointer as an allocation size, code execution would be achieved. 
 
 ### .fini and .fini_array
 
@@ -313,16 +313,6 @@ The `.ctors, .dtors` are actually legacy versions of the modern `.fini_array` - 
 
 Note they have reversed the functions execution order. 
 
-### __exit_funcs
-
-The internal implementation of `exit`, actually calls `__run_exit_handlers`. This function first issues `__call_tls_dtors`, in case it isn't a `NULL` ptr. 
-
-Apperently there is alot of info about exit handlers, i will look into this more deeply: [link1][exit-handlers], [link2][exit-handlers2], [link3][exit-handlers3], [link4][exit-handlers4], [link5][exit-handlers5], [link6][exit-handlers6], [link7][exit-handlers7], [link8][exit-handlers8], [link9][exit-handlers9], [link10][exit-handlers10].
-
-### tls_dtor_list
-
-### __call_tls_dtors
-
 ### .dynamic
 
 Described [here][dynamic-technique]. \
@@ -335,13 +325,25 @@ It means that in case the `.fini` entry within the `.dynamic` would be overwritt
 
 Easy-pissy. 
 
+### __exit_funcs
+
+The internal implementation of `exit`, actually calls `__run_exit_handlers`. This function first issues `__call_tls_dtors`, in case it isn't a `NULL` ptr. 
+
+Apperently there is alot of info about exit handlers, i will look into this more deeply in a future post: [link1][exit-handlers], [link2][exit-handlers2], [link3][exit-handlers3], [link4][exit-handlers4], [link5][exit-handlers5], [link6][exit-handlers6], [link7][exit-handlers7], [link8][exit-handlers8], [link9][exit-handlers9], [link10][exit-handlers10].
+
+### tls_dtor_list
+
+Will add a future post about it.
+
+### __call_tls_dtors
+
+Will add a future post about it.
 
 ## Mitigations
 
 GLIBC 2.29 adds top chunk `size` sanity check - so that it cannot exceed its arena's `system_mem`. 
 
 GLIBC 2.30 adds a maximum allocation size check for malloc - limiting possible wrap-arounds. 
-
 
 [the-malloc-maleficarum]: https://dl.packetstormsecurity.net/papers/attack/MallocMaleficarum.txt
 [dtors-technique]: https://lwn.net/2000/1214/a/sec-dtors.php3
