@@ -256,16 +256,27 @@ Arch:     amd64-64-little
 ```
 
 We do have a libc leak. \
-It is possible to only allocat `fastbin` chunks, excluding 0x70 sized.
+It is possible to only allocate `fastbin` chunks, excluding 0x70 sized.
 
-### Hook Candidate
 
-First first goal is to find a good __hook symbol. 
+The first goal is to find a good __hook symbol. 
 
-All of `__realloc_hook, __malloc_hook, __memalign_hook` contained a single possible fastbin chunk, but its size field is 0x7f - meaning it resides within the 0x70 fastbin - which we cannot allocate.
+All of `__realloc_hook, __malloc_hook, __memalign_hook` contained a single possible fastbin chunk, but its size field is 0x7f - meaning it resides within the 0x70 fastbin, which we cannot allocate.
 
-My idea consist of two stages. \
-First: we have to corrupt the top chunk of the heap. 
+My idea consist of multiple stages:
+
+1. We will forge a fake chunk on the heap arena
+
+2. This chunk will be allocated, so that the `top_chunk` head pointer resides within its `user_content`. \
+In that way, we will be able to control the `top_chunk` ptr.
+
+3. The value of the `top_chunk` ptr would point towards the `__malloc_hook` (or somewhere similar) - that way, the top chunk `user_content` would overlap with the `__malloc_hook`. 
+
+4. We would trigger an allocation from the `top_chunk`, and write it a one-gadget. \
+That way, the one-gadget is written into the `__malloc_hook`
+
+5. We will trigger a malloc call. 
+
 
 By examining the `main_arena` content, i've noticed it is possible to initialize the fastbins, thus creating candidates for `find_fake_fast` - meaning the top chunk would be able to serve as a fake chunk, which we can corrupt.
 
@@ -305,7 +316,7 @@ Therefore, my idea is to forge the following heap layout:
 pwndbg> x/30gx &main_arena
 0x7ffff7dd0b60 <main_arena>:    0x0000000000000000      0x0000000000000000
 0x7ffff7dd0b70 <main_arena+16>: 0x0000000000000000      0x0000000000000000
-0x7ffff7dd0b80 <main_arena+32>: 0x0000000000000000      0x0000000000000061 (bin0x50)
+0x7ffff7dd0b80 <main_arena+32>: 0x0000000000000000      0x0000000000000061 (fastbin[0x50])
 0x7ffff7dd0b90 <main_arena+48>: 0x00007ffff7dd0b80      0x0000000000000000
 0x7ffff7dd0ba0 <main_arena+64>: 0x0000000000000000      0x0000000000000000
 0x7ffff7dd0bb0 <main_arena+80>: 0x0000000000000000      0x0000000000000000
@@ -314,7 +325,7 @@ pwndbg> x/30gx &main_arena
 
 I will overwrite the head of `fastbin[0x50]` to `0x0000000000000061`, and the head of `fastbin[0x60]` to its own address minus 16 bytes.
 
-That way, upon requesting a `malloc(0x58)`, it will attempt to allocate it from the 0x60 fastbin. \
+That way, upon requesting a `malloc(0x58)`, it will attempt to allocate it from `fastbin[0x60]`. \
 Because the relevant free chunk is overwritten to `0x00007ffff7dd0b80`, its size field corresponds to `0x0000000000000061` - passing the fastbin size mitigation.
 
 The address of `0x7ffff7dd0b90` and 0x58 bytes beyond, are considered as part of the `user_content` - so they will be writeable!
@@ -322,9 +333,8 @@ The address of `0x7ffff7dd0b90` and 0x58 bytes beyond, are considered as part of
 Since `0x0000555555603210` represents the pointer of the top chunk, i will be able to overwrite it - with (approximally) the address of `__malloc_hook`. 
 
 Unlike fastbins, allocations from the top chunk do not have the "correct fastbin index" mitigation (duh).
-There is a check is that the size of the top chunk is large enough.
 
-Note, that there is also the following check for the top_chunk size:
+There is a check is that the size of the top chunk is large enough, as well as the following check for the top_chunk size:
 
 ```c
 if (__glibc_unlikely (size > av->system_mem))
@@ -334,12 +344,15 @@ if (__glibc_unlikely (size > av->system_mem))
 Because `__malloc_hook` is surrounded by large pointers prior to it, we can easily forge a correct top chunk. 
 We only have to make sure to give a certain offset, so the upper `size` mitigation won't apply. 
 
-The `__malloc_hook` can then be easily overwritten with a one-gadget. \
-However, during executing the hook, we meet non of the one-gadget constraints!
+The `__malloc_hook` can then be easily overwritten with a one-gadget. 
 
-By browsing the `dash` manual page, we can see there is a possible trick. By stating a `-s` flag, the shell reads commands from stdin, which is equivalent to `argv[0] == NULL` - exactly what we want.
+Note that non of the one-gadget constraints are being satisfied, and the shell crashes right away (as it has malformed `argv, envp` values).
 
-Another trick with `dash` is passing the `-p` flag, keeping the suid bit of the shell on.
+By browsing the `dash` manual page, we can see there is a possible trick. \
+By stating a `-s` flag, the shell reads commands from stdin, and stops parsing the `argv, envp` parameters. \
+This is equivalent to `argv[1] == NULL` - which is exactly what we want.
+
+Another cool trick with `dash` is passing the `-p` flag, which keeps the euid bit of the shell on (may be useful for `suid` binaries). 
 
 Full RCE PoC:
 
