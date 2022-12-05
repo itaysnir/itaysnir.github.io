@@ -253,6 +253,39 @@ fastbins
 
 This information is retrieved from the `main arena` of this heap.
 
+By executing:
+
+```c
+free(b);
+free(c);
+```
+
+The following heap layout is obtained (each freed chunk is replaced to the head of the fastbin):
+
+```bash
+pwndbg> vis
+
+0x602000        0x0000000000000000      0x0000000000000021      ........!.......         <-- fastbins[0x20][2]
+0x602010        0x0000000000000000      0x0000000000000000      ................
+0x602020        0x0000000000000000      0x0000000000000021      ........!.......         <-- fastbins[0x20][1]
+0x602030        0x0000000000602000      0x0000000000000000      . `.............
+0x602040        0x0000000000000000      0x0000000000000021      ........!.......         <-- fastbins[0x20][0]
+0x602050        0x0000000000602020      0x0000000000000000        `.............
+0x602060        0x0000000000000000      0x0000000000020fa1      ................         <-- Top chunk
+pwndbg> fastbins
+fastbins
+0x20: 0x602040 —▸ 0x602020 —▸ 0x602000 ◂— 0x0
+0x30: 0x0
+0x40: 0x0
+0x50: 0x0
+0x60: 0x0
+0x70: 0x0
+0x80: 0x0
+```
+
+Note that `prev_inuse` bit is still set! This is because fastbins are the exception for this bit usage. 
+
+
 ## Arenas
 
 malloc administrates process heaps via arenas, described by the `malloc_state` struct. 
