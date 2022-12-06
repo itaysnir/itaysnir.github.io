@@ -64,52 +64,60 @@ if has("cscope")
         " Open a quickfix window for the following queries.
         set cscopequickfix=s-,c-,d-,i-,t-,e-,g-
 endif
-
 ```
 
 
-## Clone your desired kernel tree
+## Clone The Kernel Git Repository
 
+```bash
+git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+cd linux-stable
+git checkout v6.1.8
+```
 
-Pretty straightforward:
-{% highlight bash %}
-git clone "github-repo" "KDIR"
-{% endhighlight %}
-
+To update the repo, issue `git pull`. 
 
 ## Create .config file
 
+Personally, i highly recommend using `make olddefconfig`. 
 
-Personally, i highly discourage using "make menuconfig". 
+Another option is using `make menuconfig`. \
 This method is manual, and by default includes way too many useless drivers, as well as significally increases compilation time. 
 
-Instead, i sugget using:
-{% highlight bash %}
+Another possibility:
+
+```bash
 make mrproper  # revert any made changes
 make localmodconfig
-{% endhighlight %}
+```
+
 Which configurates only the currently loaded modules (on the host machine), as stated by lsmod. 
 
 It is possible to further reduce the amount of compiled modules, by issuing an lsmod at the VM, and saving this file:
-{% highlight bash %}
+
+```bash
 target$ lsmod > /tmp/mylsmod
 target$ scp /tmp/mylsmod host:/tmp
 host$ make LSMOD=/tmp/mylsmod localmodconfig
-{% endhighlight %}
+```
 
 (yes, i know many images dont contain scp by default. We will handle this soon by integrating scp to our disk image, dont worry).
 
-Another good alternative, is using:
-{% highlight bash %}
+Another alternative, is using:
+
+```bash
 make allnoconfig
-{% endhighlight %}
+```
+
 And manually enable few of the desired modules, as stated [in this great post][great-post].
 
-To avoid any pem certificate crap compilation errors, disable the following config attribute:
-{% highlight bash %}
-<KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
-{% endhighlight %}
+### Config File Changes 
 
+To avoid any pem certificate compilation errors, disable the following config attribute:
+
+```bash
+<KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
+```
 
 
 ## Compile
