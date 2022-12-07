@@ -15,30 +15,29 @@ The modern version of the unlinking technique, `safe unlink`, is abit more compl
 The new partial unlinking algorithm introduces 3 new integrity checks:
 
 1. `chunksize(p) != prev_size(next_chunk(p))`
-
-In case we control the `prev_size` of the succeeding chunk after the one that is being freed, which is in our case - this can be easily bypassed. 
+In case we control the `prev_size` of the next chunk, this can be easily bypassed. 
 
 2. `fd->bk != p || bk->fd != p`
-
-This is an harsh mitigation. We have to write near the fake target addresses, `bk, fd` ptrs that points back to the chunk being freed. 
+This is an harsh mitigation. \
+We either have to write near the fake target addresses: `bk, fd` ptrs that points back to the chunk being freed. \
+Another option is to find memory regions that contains pointers towards `p`. 
 
 3. `p->fd_nextsize->bk_nextsize != p || p->bk_nextsize->fd_nextsize != p`
-
-Relevant only for `largebins`. 
+This is only relevant for `largebins`, similar to the above. 
 
 The example binary contains a `glibc = 2.30`, with `NX, ASLR, Full RELRO, canary`. 
 
-There are also pointers of the heap stored at the `.bss`. \
+Note that there are also pointers of the heap stored at the `.bss`, within the `m_array` variable. \
 The trick is to use these pointers, so that the `safe_unlink` checks may pass. 
 
-As with the `unsafe unlink`, the following 2 writes would happen:
+As with the `unsafe unlink`, after a successful unlinking, the following 2 writes would occur:
 
 ```c
 *(A->bk + 0x10) = A->fd;
 *(A->fd + 0x18) = A->bk;
 ```
 
-Moreover, the new constraints due to the improved mitigation are (assuming the `size` check can be easily bypassed):
+Moreover, the two new constraints due to the improved mitigation are (assuming the `size` check can be easily bypassed):
 
 ```c
 (A->bk)->fd == A
@@ -52,25 +51,17 @@ Meaning:
 *(A->fd + 0x18) == A
 ```
 
-Meaning a total of 2 writes, and 2 constraints:
-
-```c
-*(A->bk + 0x10) = A->fd;
-*(A->fd + 0x18) = A->bk;
-*(A->bk + 0x10) == A
-*(A->fd + 0x18) == A
-```
+So there would be a total of 2 writes, and 2 constraints. 
 
 Recall that the writes are only being made after the constraints have succesfully passed. \
-It *DOESN'T* mean the solution must enforce the following criteria: `A->fd == A->bk == A`.
+So it *DOESN'T* mean the solution must enforce the following criteria: `A->fd == A->bk == A`.
 
-So the trick is to find addresses that holds a pointer towards the heap's chunk, `A`. \
-These addresses would be overwritten. \
-Note that it is actually pretty common to see global pointers towards the heap. 
+Note that it is actually pretty common to see global pointers towards the heap. \
+On our example binary, we have `m_array`, which is a global pointer at `0x602060`, that stores the value of `A` address, `0x603010`. \
+(Note that this is the `user_content` part memory address, not the full chunk's start address! \
+we will fix this by referring the chunk as being started 0x10 bytes away from its real start address, `0x603000`). 
 
-On the example binary, we have `m_array`, which is a global pointer at `0x602010`, that stores the value of `A` address, `0x603000`.
-
-In case we set `A->fd + 0x18` to the address of `m_array`, the last check would pass - because `*(0x602010) == 0x603000`. \
+In case we set `A->fd + 0x18` to the address of `m_array`, the last check should would pass - because `*(0x602060) == 0x603010`. \
 The same holds for `A->bk + 0x10`. \
 
 So the two constraints are being translated to:
@@ -80,14 +71,15 @@ A->bk = &m_array - 0x10
 A->fd = &m_array - 0x18
 ```
 
-This would result with corrupting the quadword at `&m_array` with the value of `&m_array - 0x18` (as it is being the last write), and succesfully unlinking the consolidated chunk to a wrong place. 
+This would result with corrupting the quadword at `&m_array` with the value of `&m_array - 0x18` (as it is being the last write), and succesfully unlinking the consolidated chunk. 
 
-Important note: we must make sure that the global pointer, `m_array`, points towards the *real* chunk heap address, and not only to its `user_data` part!
+As said, we must make sure that the global pointer, `m_array`, points towards the *real* chunk heap address, and not only to its `user_data` part. 
 
 In order to overcome this, recall that we control `prev_size` field of the freed chunk. \
-It means we can make malloc think the free chunk actually starts 0x10 bytes after it really does!
+Since Malloc uses this field to determine the previous chunk start address, we can trick it so that it will think the chunk starts 0x10 bytes after its real address. 
 
-As said, after the unlink has occured, `m_array[0] = &m_array - 0x18`. \
+Now, recall that after the unlink has occured, `m_array[0] = &m_array - 0x18`. \
+It means the `m_array` would contain a pointer towards the `.bss`, instead of the heap. \
 A simple request to write to index 0 of the array results with an overflow of the `target` address.
 
 Full RCE POC:
