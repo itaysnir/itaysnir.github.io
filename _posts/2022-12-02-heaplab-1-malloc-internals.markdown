@@ -394,3 +394,167 @@ In case that fails, a *new heap is allocated - and becomes the top chunk of that
 The remaining memory in the old top chunk is freed. \
 Malloc keeps track of the remaining top chunk memory using its `size` field only (the core idea behind `House of Force`). 
 
+## Unlinking
+
+When calling `free` on a chunk size that corresponds to a `fastbin`, it have no impact on the surrounding chunks. \
+Meaning - the heap content remains exactly the same (even the `PREV_INUSE` flag, doesn't hold for `fastbins`). 
+
+However, upon freeing an `unsortedbin` size chunk, the heap layout changes.
+
+Usually `partial unlink` refers to `unsortedbin, smallbin` unlinking, where `full unlink`refers to `largebin, bitmap search` unlink. 
+
+Assume the following code:
+
+```c
+void* a = malloc(0x88);
+void* b = malloc(0x88);
+free(b);
+```
+
+Before `free`:
+
+```bash
+pwndbg> vis
+
+0x602000        0x0000000000000000      0x0000000000000091      ................
+0x602010        0x0000000000000000      0x0000000000000000      ................
+0x602020        0x0000000000000000      0x0000000000000000      ................
+0x602030        0x0000000000000000      0x0000000000000000      ................
+0x602040        0x0000000000000000      0x0000000000000000      ................
+0x602050        0x0000000000000000      0x0000000000000000      ................
+0x602060        0x0000000000000000      0x0000000000000000      ................
+0x602070        0x0000000000000000      0x0000000000000000      ................
+0x602080        0x0000000000000000      0x0000000000000000      ................
+0x602090        0x0000000000000000      0x0000000000000091      ................
+0x6020a0        0x0000000000000000      0x0000000000000000      ................
+0x6020b0        0x0000000000000000      0x0000000000000000      ................
+0x6020c0        0x0000000000000000      0x0000000000000000      ................
+0x6020d0        0x0000000000000000      0x0000000000000000      ................
+0x6020e0        0x0000000000000000      0x0000000000000000      ................
+0x6020f0        0x0000000000000000      0x0000000000000000      ................
+0x602100        0x0000000000000000      0x0000000000000000      ................
+0x602110        0x0000000000000000      0x0000000000000000      ................
+0x602120        0x0000000000000000      0x0000000000020ee1      ................         <-- Top chunk
+```
+
+After `free`:
+
+```bash
+pwndbg> vis
+
+0x602000        0x0000000000000000      0x0000000000000091      ................
+0x602010        0x0000000000000000      0x0000000000000000      ................
+0x602020        0x0000000000000000      0x0000000000000000      ................
+0x602030        0x0000000000000000      0x0000000000000000      ................
+0x602040        0x0000000000000000      0x0000000000000000      ................
+0x602050        0x0000000000000000      0x0000000000000000      ................
+0x602060        0x0000000000000000      0x0000000000000000      ................
+0x602070        0x0000000000000000      0x0000000000000000      ................
+0x602080        0x0000000000000000      0x0000000000000000      ................
+0x602090        0x0000000000000000      0x0000000000020f71      ........q.......         <-- Top chunk
+```
+
+Meaning the `b` chunk was completely coalesced to the `top chunk`!
+
+The following rule holds:
+
+*In case a chunk adjacent to the top chunk is freed, and it does not qualify for any fastbin, it will be coalesced to the top chunk*
+
+Indeed, we can see the `unsortedbin` remained empty upon `free(b)`. 
+
+### unsortedbin
+
+There is only *one* `unsortedbin` per arena. \
+This is a doubly-linked (uses `fd, bk` ptrs), circular list, that *holds chunks of any size*. 
+
+Therefore, the `main_arena` only contains two pointers of the `unsortedbin`: `unsortedbin_fd, unsortedbin_bk`.
+
+Freed chunks are registered within the `unsortedbin` head. \
+Unlike `fastbins`, allocations are being made from the *tail* of the bin. 
+
+In case we would `free` a non-top-chunk-adjacent `unsortedbin` chunk, few heap changes would occur:
+
+1. The `PREV_INUSE` flag of the succeeding chunk is cleared.
+
+2. The last quadword of the freed chunk `user_data`, now repurposed as the `PREV_SIZE` field of the succeeding chunk. 
+
+3. The `fd, bk` ptrs of the freed chunks are set.
+
+Note: upon freeing the first `unsortedbin` chunk, its `fd, bk` ptrs would point towards a *fake chunk* on the main arena (where its `PREV_SIZE` field repurposed as the `top_chunk` ptr).
+
+This fake chunk's `fd, bk` ptrs are initialized to point toward the freed unsorted chunk:
+
+```bash
+pwndbg> vis
+
+0x602000        0x0000000000000000      0x0000000000000091      ................         <-- unsortedbin[all][0]
+0x602010        0x00007ffff7dd0bc0      0x00007ffff7dd0bc0      ................
+0x602020        0x0000000000000000      0x0000000000000000      ................
+
+pwndbg> x/20gx &main_arena
+0x7ffff7dd0b60 <main_arena>:    0x0000000000000000      0x0000000000000000
+0x7ffff7dd0b70 <main_arena+16>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0b80 <main_arena+32>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0b90 <main_arena+48>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0ba0 <main_arena+64>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0bb0 <main_arena+80>: 0x0000000000000000      0x0000000000000000
+0x7ffff7dd0bc0 <main_arena+96>: 0x0000000000602140      0x0000000000000000
+0x7ffff7dd0bd0 <main_arena+112>:        0x0000000000602000      0x0000000000602000
+```
+
+### Consolidation
+
+Upon freeing the two chunks allocated above, a *coalescing* is being made - hence creating a large, freed hole within the heap:
+
+```bash
+pwndbg> vis
+
+0x602000        0x0000000000000000      0x0000000000000121      ........!.......         <-- unsortedbin[all][0]
+0x602010        0x00007ffff7dd0bc0      0x00007ffff7dd0bc0      ................
+0x602020        0x0000000000000000      0x0000000000000000      ................
+0x602030        0x0000000000000000      0x0000000000000000      ................
+0x602040        0x0000000000000000      0x0000000000000000      ................
+0x602050        0x0000000000000000      0x0000000000000000      ................
+0x602060        0x0000000000000000      0x0000000000000000      ................
+0x602070        0x0000000000000000      0x0000000000000000      ................
+0x602080        0x0000000000000000      0x0000000000000000      ................
+0x602090        0x0000000000000090      0x0000000000000090      ................
+0x6020a0        0x0000000000000000      0x0000000000000000      ................
+0x6020b0        0x0000000000000000      0x0000000000000000      ................
+0x6020c0        0x0000000000000000      0x0000000000000000      ................
+0x6020d0        0x0000000000000000      0x0000000000000000      ................
+0x6020e0        0x0000000000000000      0x0000000000000000      ................
+0x6020f0        0x0000000000000000      0x0000000000000000      ................
+0x602100        0x0000000000000000      0x0000000000000000      ................
+0x602110        0x0000000000000000      0x0000000000000000      ................
+0x602120        0x0000000000000120      0x0000000000000020       ....... .......
+0x602130        0x0000000000000000      0x0000000000000000      ................
+0x602140        0x0000000000000000      0x0000000000020ec1      ................         <-- Top chunk
+```
+
+Key notes:
+
+1. The succeeding fast chunk, whose size field was `0x21`, have turned off the `PREV_INUSE` bit. \
+Moreover, its `PREV_SIZE` field has been set to `0x120`. 
+
+2. The `fd, bk` ptrs of the freed chunks weren't set. \
+Moreover, the `fd, bk` ptrs of the first freed chunk weren't changed at all. The `unsortedbin` wasn't changed. 
+
+3. The size of the first freed chunk was increased from `0x91` to `0x121`
+
+The consolidation algorithm:
+
+1. Checks whether either adjacent chunk is available for consolidation, via the `PREV_INUSE` flags. \
+In case this bit is on, it means consolidation with the previous chunk is possible. Malloc would find this chunk, via the `PREV_SIZE` field of the current chunk. \
+In case this bit is off, it looks forward *two chunks*, using their `SIZE` fields, and checks the `PREV_INUSE` flag of the succeeding chunk next chunk (as this is the only way to know if the *SUCCEEDING* chunk is in use).
+
+2. In case a consolidation candidate was found, it must remove the candidate from which ever freelist theyre already linked to. Otherwise, the chunk may get linked twiced. 
+
+3. Malloc calculates the new large chunk size, and updates its `size` and `prev_size` fields. 
+
+4. The new consolidated chunk is linked to the `unsortedbin`.
+
+Note that multiple consolidations may occur with a single `free` call. \
+For example, consolidating a preceding chunk, creating a large chunk that may be consolidated with the `top_chunk`, would result with a double consolidation.
+
+The advantage of doubly-linked lists, is the fast unlinking algorithmm (which finds the preceding chunk in `O(1), read chunk->bk`), which cannot be performed on a singly-linked lists. 
