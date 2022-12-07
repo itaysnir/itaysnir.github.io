@@ -131,6 +131,8 @@ It will sort `0x230` to its smallbin, `0x400` to its largebin, and allocate the 
 
 There is exception to the exact-fit - called `last remainder`. 
 
+### Partial Unlink
+
 Note that upon unlinking a chunk from the `unsortedbin` this way, it actually can perform an optimization, called *partial unlink*. \
 Because the victim chunk is always the tail of the bin, partially unlinking is made by :
 
@@ -147,6 +149,8 @@ Remember that the `victim->fd` is completely ignored within this partial unlinki
 The key note here, is that after unlinking the victim chunk, `unsorted_head->bk`, aka the tail of the unsortedbin, is the attacker data. \
 It means that after sorting the victim chunk (in case it wasnt an exact fit), it will continue to search for chunks from this address. \
 Therefore, usually it is easier to just perform an exact allocation to trigger the unlink. 
+
+### Exploit
 
 Example of overwriting arbitrary address (the heap first quadword) to the unsortedbin_head.
 
