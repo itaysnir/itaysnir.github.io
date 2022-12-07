@@ -394,5 +394,3 @@ In case that fails, a *new heap is allocated - and becomes the top chunk of that
 The remaining memory in the old top chunk is freed. \
 Malloc keeps track of the remaining top chunk memory using its `size` field only (the core idea behind `House of Force`). 
 
-
-

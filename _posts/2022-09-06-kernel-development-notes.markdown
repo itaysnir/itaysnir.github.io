@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Linux Kernel Development Tips"
+title:  "Linux Kernel Development Notes"
 date:   2022-09-06 19:59:43 +0300
 categories: jekyll update
 ---
@@ -295,8 +295,8 @@ cd ${KDIR}
 make olddefconfig
 make modules -j $(( $(ncpus) + 1 ))
 make ARCH=${ARCH} -j $(( $(ncpus) + 1 ))
-make modules_install
-make install
+sudo make modules_install
+sudo make install
 ```
 
 Note: `make modules_install` creates the required modules under `/lib/modules/<KVER>`.
@@ -312,7 +312,7 @@ sudo update-grub
 sudo grub-reboot <VERSION_NAME> && reboot
 ```
 
-Print grub menuentries for all compiled kernels:
+Print grub menu entries for all compiled kernels:
 ```bash
 grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "$1, $2, $3, $4, $5, $6, $7}'
 ```
