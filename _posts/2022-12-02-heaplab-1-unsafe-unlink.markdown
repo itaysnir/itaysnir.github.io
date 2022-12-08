@@ -103,3 +103,7 @@ free(chunk_a)
 
 This exploit uses the `backward consolidation` - as the fake `fd, bk` held within the chunk preceding the chunk being freed. \
 There is also a `forward consolidation` variant, where the fake `fd, bk` reside within the succeeding chunk. 
+
+Note that in this case, `prev_size` was overwritten to the original value, of `0x90`. \
+However, it can be overwritten to other values, hence pointing towards other location fake chunk. \
+In particular - it can be set to `0x0`, making the current chunk to be consolidated by itself! 

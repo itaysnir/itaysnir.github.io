@@ -116,3 +116,6 @@ edit(0, p64(libc.address + 0xe1fa1))
 # Trigger onegadget
 free(chunk_A)
 ```
+
+Note that I've chose a fake `prev_size = 0x80`. \
+It is possible to forge a large `prev_size` field, so that the consolidation attempt wraps around the VA space, and operate on a fake chunk within the freed chunk (meaning we can set its `size` value so the integrity check of `size(p) == prev_size(next(p))`would pass). 
