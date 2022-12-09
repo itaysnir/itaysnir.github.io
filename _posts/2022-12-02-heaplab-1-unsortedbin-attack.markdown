@@ -152,6 +152,3 @@ edit(chunk_A, p64(0) + p64(new_bk))
 malloc(0x88)
 ```
 
-In short, the unsortedbin attack allows writing the address of the unsortedbin head (which is a arena address) toward an arbitrary memory address. 
-
-Therefore, this technique is especially useful in order to leak an arena's address - which is a libc address in the case of `main_arena`. 
