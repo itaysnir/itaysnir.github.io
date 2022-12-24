@@ -318,7 +318,7 @@ grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "
 ```
 
 
-## And of course, practice!
+## Practice
 
 
 I highly suggest the linux-kernel official labs for training:

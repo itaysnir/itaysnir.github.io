@@ -10,7 +10,6 @@ categories: jekyll update
 {:toc}
 ## Modern Core Linux Performance Paper
 
-
 The following [cool paper][cool-paper] describes various mechanisms that were added or altered within the linux kernel for the last 7 years.
 It explains the main causes of slowdowns and overheads made by these new mechanisms - which dramatically impact networking performace. 
 
@@ -29,7 +28,6 @@ CONFIG_CONTEXT_TRACKING_FORCE=""         # Forced context tracking
 
 ## Kernel Command Line
 
-
 For reliable measurements, it is important to disable security features, such as Spectre and Meltdown hardenings.
 There are many more arguments we shall disable, for example iommu usage. 
 
@@ -42,16 +40,16 @@ Afterwards, issue `update-grub`, and reboot the configured kernel.
 Finally, read `/proc/cmdline` to verify the configuration have completed succesfully. 
 
 
-
 ## Ethtool
 
 The `ethtool` command allows querying and setting NIC driver configuration. 
 
-Both client and server interfaces should be configured via `ethtool`. 
+Note that both client and server interfaces should be configured via `ethtool` as follow.
 
 ### Ring Buffer Size
 
-The inner socket ring buffer entries count, for both TX and RX, can be adjusted:
+The inner socket ring buffer entries count, for both TX and RX.
+This value can be adjusted:
 
 ```bash
 sudo ethtool -G eth4 rx 1024 tx 1024
@@ -91,16 +89,59 @@ This feature should be enabled:
 sudo ethtool -K eth4 gro on
 ```
 
+### TSO
+
+Transmit segmentation offload, or TCP segmentation offload, also referred as LSO (large segment offload, or large send offload). 
+
+Instead of the operating system network stack being responsible for breaking a large IP packet into MTU-sized packets, the NIC's driver does it. 
+
+If TSO is enabled on the TX path, it greatly offloads the CPU cycles required to transmit large amount of data. 
+
+In order to see if certain NIC driver supports TSO:
+
+```bash
+ethtool -k <interface> | grep "tcp-segmentation-offload"
+```
+
+This feature should be enabled.
+
 ### GSO
 
 Stands for *generic segmentation offload*. \
+This is a generalisation of the TSO concept, for protocols other than TCP. 
 
+The main saving is due to traversing the network stack only once, rather than many times for each super-packet. \
+The key idea is to postpone segmentation as late as possible - idealy within the NIC driver. \
+The driver would rip the super packet to SGLs, or alternatively load the segments into pre-allocated continious memory to be fed to the NIC (so `sk_buffs` won't be segmented). 
 
-### TSO
+Since not all NIC drivers support these, it is possible to perform segmentation right before entry to the xmit routine - GSO. 
 
+Note that both TSO and GSO are only effective in case the MTU (1500) is significantly less than the maximum IP packet value (64 KB).
+
+This feature should be enabled:
+
+```bash
+sudo ethtool -K eth4 gso on
+```
+
+For further reading, see [dpdk][dpdk-gso]
 
 ### PFC
 
+Stands for *priority-based flow control*. \
+This allows selection of traffic flows within a link and pause them, so that output queues associated with these flows do not overflow and drop packets. 
+
+A PFC-enabled queue is a lossless queue. \
+When congestion occurs in such a queue on a downstream device, the downstream device instructs the upstream device to stop sending traffic in the queue - hence zero packet loss. 
+
+Note that Ethernet's `PAUSE` packets aren't granular - as they pause all of the traffic (queues) within the interface. \
+PFC is more granular, as it allows pausing a specific queue. 
+
+This feature should be enabled:
+
+```bash
+sudo ethtool -A <interface> rx on tx on
+```
 
 ## IRQ Affinity
 
@@ -144,8 +185,9 @@ Important note: some drivers don't register their IRQ numbers within `/proc/inte
 
 In such cases, their IRQ numbers can be found under `/sys/class/net/<interface>/device/msi_irqs`. 
 
-For more reading, see [this][irq-affinity]
+For further reading aboit IRQ affinity, see [this][irq-affinity]
 
 [irq-affinity]: https://greenhost.net/blog/2013/04/10/multi-queue-network-interfaces-with-smp-on-linux/
 [cool-paper]: https://dl.acm.org/doi/10.1145/3341301.3359640
 [tcp-offload]: https://en.wikipedia.org/wiki/TCP_offload_engine
+[dpdk-gso]: https://doc.dpdk.org/guides/prog_guide/generic_segmentation_offload_lib.html
