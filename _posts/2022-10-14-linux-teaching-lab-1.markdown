@@ -272,4 +272,3 @@ It means that users may change it dynamically via `/sys/module/printk/parameters
 [debugfs]: https://www.opensourceforu.com/2010/10/debugging-linux-kernel-with-debugfs/
 [bootlin-link]: https://elixir.bootlin.com/linux/latest/source
 [early-params]: https://lists.kernelnewbies.org/pipermail/kernelnewbies/2011-July/002709.html
-
