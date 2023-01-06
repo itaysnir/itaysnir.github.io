@@ -59,6 +59,7 @@ For example, I've set the following rule, to catch any process that opens certai
 
 ```bash
 auditctl -a always,exit -F arch=b64 -S openat -S open -F path=/home/itay/Documents/audit_test
+ausearch -f audit_test  # Flag of -k allows searching by string
 ```
 
 An example record:
