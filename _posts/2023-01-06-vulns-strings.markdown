@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Vulnerabilities - Strings"
+title:  "Vulns - Strings"
 date:   2023-01-06 19:59:43 +0300
 categories: jekyll update
 ---
@@ -695,7 +695,7 @@ exit(1)
 
 An in-deptch analysis of this vuln can be found [here][rlogin-vuln].
 
-### Kerberos
+### Kerberos V4
 
 Network authentication protocol. 
 
@@ -712,7 +712,7 @@ if (auth_sys == KRB5_RECVAUTH_V4)
 } 
 else 
 {
-    strcat(cmdbuf, "/rcp");
+  strcat(cmdbuf, "/rcp");
 }
 if (stat((char *)cmdbuf + offst, &s) >= 0)
   strcat(cmdbuf, cp);
@@ -735,8 +735,36 @@ strncat(cmdbuf, "/v4rcp", sizeof(cmdbuf) - 1 - strlen(cmdbuf));
 
 A full description of the vulnerability can be found [here][kerberos-vuln].
 
+### CVE-2022-0583 - Wireshark Heap OOB Read
+
+The vulnerable code:
+
+```c
+while ((*ptr != '\n') && (*ptr != '\0') &&
+      (bytes_processed < total_config_bytes) &&
+      (entry_length < bufsiz))
+{
+...
+}
+```
+
+The problem is `ptr` being referenced *prior to bounds checking*. \
+It means that one extra byte past the end of the packet, may be read-accessed. 
+
+While it doesn't seem too awful at a first glance, the heap buffer may be crafted as the last chunk within a memory page - while the successing page isn't mapped into the memory. 
+
+In such a scenario, the process would crash - leading to a potential DOS attack.
+
+The solution is to *check pointer bounds, prior to dereferencing it*:
+
+```c
+((bytes_processed < total_config_bytes) &&
+      (entry_length < bufsiz) &&
+      (*ptr != '\n') && (*ptr != '\0'))
+```
 
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard
 [cwe-c]: https://cwe.mitre.org/data/slices/658.html
 [rlogin-vuln]: https://resources.sei.cmu.edu/library/asset-view.cfm?assetID=13161
 [kerberos-vuln]: http://web.mit.edu/kerberos/www/advisories/krb4buf.txt
+[wireshark-vuln]: https://gitlab.com/wireshark/wireshark/-/issues/17840
