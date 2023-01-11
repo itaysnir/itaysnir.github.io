@@ -12,6 +12,10 @@ categories: jekyll update
 
 The C specification provides 4 memory allocation functions, all are widely available on multiple platforms.
 
+CERT C chapter 8 describes the secure coding guidelines for dynamic memory. \
+It can be found [here][cert-c].
+
+
 ### malloc
 
 `malloc(size_t size)` - allocates `size` bytes, returns ptr to the allocated memory chunk. 
@@ -65,3 +69,78 @@ Note that `free(NULL)` is completely fine, and no operation is performed in such
 
 ## Alignment
 
+As mentioned, `aligned_alloc` can be used for alignned allocations. 
+
+The alignment of certain object may be found via `alignof`. 
+
+The main issue with allocating strictly aligned memory is reallocation. \
+If `realloc` is called on a pointer returned from `aligned_alloc`, there is no gurantee of an alignment stricter than the normal alignment. 
+
+`MEM36-C` explains this issue. \
+For example:
+
+```c
+size_t resize = 1024;
+  size_t alignment = 4096;
+  int *ptr;
+  int *ptr1;
+   
+  if (NULL == (ptr = (int *)aligned_alloc(alignment, sizeof(int)))) {
+    /* Handle error */
+  }
+ 
+  if (NULL == (ptr1 = (int *)realloc(ptr, resize))) {
+    /* Handle error */
+  }
+```
+
+Because `resize > sizeof(int)`, `realloc` allocates new chunk, which may start from a different memory address (in case there is a succeeding chunk). 
+
+In that case, the newly allocated chunk may not be aligned anymore. 
+
+The guideline recommends not using `realloc` at all, for allocations involving alignment constraints. 
+
+Memory should be manually re-`aligned-alloc`'ed, `memcpy`'d, and `free`'d. 
+
+## alloca
+
+Allocates memory within the stack. \
+Automatically freed when the function returns, should *not* be called within `free`.
+
+Often implemented as `inline`, with *only a signle instruction to adjust $rsp*. \
+It means it does not return a `NULL` upon error, and can make allocations that exceeds the stack's bounds. 
+
+This macro should be avoided. It may easily exhaust the stack memory, for large allocations.
+
+A better alternative that some compilers supports, are variable-length-arrays (VLAs). \
+These are arrays, having `size` initialized as a runtime variable, instead of a constant integer:
+
+```c
+int f (size_t size)
+{
+    char vla[size];
+}
+```
+
+The allocated buffer lifetime is its declaration scope. \
+Note that jumpion to another block / embedded block *prior to the declaration*, should not allocate the buffer (in most compilers). 
+
+If `size` is a signed, negative integer - undefined behavior occurs. 
+
+Moreover, for extremely large values, allocations may exceed the bounds of the stack - and even wrap around the virtual address space. \
+This can be useful in order to overwrite program data (recall that the stack grows downwards tho). 
+
+Therefore, sanitazion of VLA arguments are very important. 
+
+`ARR32-C` describes this issue. 
+
+Note that `sizeof` operator on a VLA returns its real size. \
+This kind of surprised me, as im used to think on `sizeof` as a fully compile-time mechanism. 
+
+## Common Memory Management Errors
+
+### Initialization Errors
+
+
+
+[cert-c]: https://wiki.sei.cmu.edu/confluence/display/c
