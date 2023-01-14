@@ -371,6 +371,20 @@ Other options are for the pointer to refer to a zero-length data block, hence th
 
 `MEM04-C` describes this issue. 
 
+`realloc` is very problematic. \
+It deallocates the old object, and returns a pointer to a new object of the desired size. \
+If new memory cannot be allocated, it doesn't frees the old object - and its value left unchanged. 
+
+Usually, `realloc` of size 0 means a `free`. \
+The return value in such case is a `NULL` ptr. \
+This may easily cause double-frees and UAFs.
+
+These types of bugs are so common, that the first ever DR (defect-record-400) of the C11, was about zero length allocations via `realloc` - [dr-400][dr-400].
+
+This feature is so terrible, that it was even declared as an *obsolescent feature* - which shouldn't be used at all, according to `MSC23-C`.
+
+
 [cwe-list]: https://cwe.mitre.org/data/definitions/658.html
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c
 [cert-cpp]: https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=88046329
+[dr-400]: https://www.open-std.org/jtc1/sc22/wg14/www/docs/dr_400.htm
