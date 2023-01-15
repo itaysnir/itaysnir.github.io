@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Vulns - Strings"
+title:  "CERT C - Strings"
 date:   2023-01-06 19:59:43 +0300
 categories: jekyll update
 ---

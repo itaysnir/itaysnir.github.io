@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Vulns - Dynamic Memory"
+title:  "CERT C - Dynamic Memory"
 date:   2023-01-09 19:59:43 +0300
 categories: jekyll update
 ---
