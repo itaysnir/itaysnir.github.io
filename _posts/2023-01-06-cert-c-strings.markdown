@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "CERT C - Strings"
+title:  "CERT C - Chapters 6, 7 - Strings"
 date:   2023-01-06 19:59:43 +0300
 categories: jekyll update
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "CERT C - Integers"
+title:  "CERT C - Chapter 4 - Integers"
 date:   2023-01-14 19:59:43 +0300
 categories: jekyll update
 ---
@@ -298,14 +298,65 @@ char *copy(size_t n, const char *c_str) {
 
 This is a very common practice to declare an index within a for loop as a `signed int`, regardless of its actual meaning (index, in this case).
 
-According to CERT, there is an overflow here, for cases where `n >= INT_MAX`. 
+According to CERT, there is an OOB-write, for cases where `n >= INT_MAX`. 
 
 Note the comparison `i < n`. \
-Because this is signed and unsigned operands, the compiler usually treats this as an unsigned comparision. 
+Because this is signed and unsigned `int` operands, the compiler promotes this comparision to an unsigned compare. 
 
-This means that after `i = INT_MAX` is increased once again, it wraps around to `INT_MIN`, and the comparision succeeds - resulting within an OOB write!
+This means that after `i = INT_MAX` is increased once again, it wraps around to `INT_MIN`, which is evaluated as `INT_MAX + 1`, since this is an unsigned comparision. \
+However, note that `i` is declared as a signed int. Thefore - there is an under-access for `p`, resulting within an OOB write!
 
 It is important to note such cases, where comparing between integers of different types. 
+
+A subtle point we should consider, is the integer type size. \
+For cases where the underlying types cannot be promoted to `int, unsigned int` (or themselves being `int, uint`), the following code *stops*:
+
+```c
+unsigned int max = INT_MAX + 1;
+
+int main()
+{
+signed int i = 0;
+
+for (i = 0 ; i < max ; ++i)
+{
+    printf("i=0x%08x max=0x%08x\n", i, max);
+}
+
+return 0;
+}
+```
+
+This means that `signed int i` have successfully "reached" the unsigned value of `INT_MAX + 1`! \
+As explained, this is because of the comparision being an unsigned comparision, so `i` is treated as an `unsigned int`. 
+
+However, we should recall that for smaller types, the comparision may promote integers to be `signed int`, even if one of the operands is of an `unsigned` type:
+
+```c
+unsigned char max = CHAR_MAX + 1;
+
+int main()
+{
+signed char i = 0;
+
+for (i = 0 ; i < max ; ++i)
+{
+    printf("i=0x%08x max=0x%08x\n", i, max);
+}
+
+return 0;
+}
+```
+
+The above code does NOT stop, resulting with an infinite loop - unlike the `int` case!
+
+The reason behind this is integer promotions. \
+In order to perform the arithmetic operator `<`, both `i, max` are being promoted to `int` - as it can fully represent their range. 
+
+This results with a *signed comparision*, where `max == 0x00000080`, and `i` wraps around after it reaches `CHAR_MAX`: \
+`0x0000007f -> 0xffffff80`, so the loop continues. 
+
+Not a trivial behavior at all. 
 
 #### Implicit Truncation
 
