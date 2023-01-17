@@ -320,7 +320,6 @@ grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "
 
 ## Practice
 
-
 I highly suggest the linux-kernel official labs for training:
 [linux teaching labs][linux-teaching-labs].
 
