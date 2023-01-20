@@ -763,6 +763,325 @@ The solution is to *check pointer bounds, prior to dereferencing it*:
       (*ptr != '\n') && (*ptr != '\0'))
 ```
 
+## CERT C Examples
+
+### STR02-C
+
+Example of real vuln, from Sun Solaris TELNET daemon: 
+
+```c
+(void) execl(LOGIN_PROGRAM, "login",
+  "-p",
+  "-d", slavename,
+  "-h", host,
+  "-s", pam_svc_name,
+  (AuthenticatingUser != NULL ? AuthenticatingUser :
+  getenv("USER")),
+  0);
+```
+
+The `USER` environment variable is an untrusted source. \
+This is a classic shell injection vuln, as the arguments aren't properly sanitized. 
+
+Assuming `login` uses the POSIX `getopt` function to parse CLI arguments, the `--` option would cause `getopt` to stop interpreting options. Meaning - putting it prior to the environment variable, would sanitize untrusted user data. 
+
+
+### STR03-C
+
+Beware of truncated strings, that may be created due to `strncpy, strncat, fgets, snprintf`. 
+
+For example, this code may leave `a` as truncated string, without null byte:
+
+```c
+char *string_data;
+char a[16];
+/* ... */
+strncpy(a, string_data, sizeof(a));
+```
+
+### STR06-C
+
+The function `strtok` have surprising behavior. \
+Usually, it is used for splitting a string into multiple tokens, splitted according to certain delimiter.
+
+However, the function actually *changes* the original input string! \
+On its first call, the first occurance of the delimiter within the string is swapped to a null byte. \
+The function then returns a pointer to the start of the string, hence "splitting" it. \
+The next calls of `strtok` would begin at the first non-delimiter character, after the fakely-placed null character. \
+Note this fake-setting-of-null-bytes continues to all of the delimiters. 
+
+Also note that `strtok` tracks the current position of the input string, by using a static pointer. \
+This means that its behavior is undefined, in case it is called multiple times in the same program / within multithreaded application. 
+
+It also means that 2+ contiguous delimiters are considered as a single delimiter (because right before `strtok` returns, it scans for the first non-delimiter character occurance). \
+Moreover, delimiter bytes at the start or end of the string are ignored. \
+The tokens returned by `strtok` are *always nonempty strings*. 
+
+For example:
+
+```c
+int main()
+{
+    char *s = (char *)malloc(0x48);  // The string must be located within a writeable section
+    memcpy(s, ",aaa;;;;bbb,", 0x48);
+
+    printf("1 = %s\n", strtok(s, ";,"));    // prints "aaa"
+    printf("2 = %s\n", strtok(NULL, ";,")); // prints "bbb"
+    printf("3 = %s\n", strtok(NULL, ";,")); // prints null
+
+    return 0;
+}
+```
+
+A correct usage with `strtok` would first copy the original string to some temp buffer, on which `strtok` would be called. 
+
+Lastly, note that this function *cannot be used on constant strings / read only memory*.
+
+A better alternative is `strspn`. 
+
+### STR10-C
+
+Different types of string literals should not be concatenated. \
+Example vuln:
+
+```c
+wchar_t *msg = L"This message is very long, so I want to divide it "
+                "into two parts.";
+```
+
+The above code causes an undefined behavior. \
+The second string should also start with an `L` prefix.
+
+### STR30-C
+
+Do not modify string literals, as usually they are stored within the .rodata section (and should be assigned ideally only for `const char *` ptrs). 
+
+Sometimes this kind of bug can be very subtle. \
+For example, the following functions return a string literal pointer (out of a string literal input): \
+`strpbrk, strrchr, strchr, strstr, memchr`.
+
+For example: 
+
+```c
+char *str  = "string literal";
+str[0] = 'S';
+```
+
+`str` actually is a local-variable pointer, located on the stack, that contains the value of some `.rodata` address. 
+
+Using an array (`char str[]`) would fix this, as its bytes would be stored directly on the writeable stack. 
+
+Another bad example:
+
+```c
+mkstemp("/tmp/edXXXXXX");
+```
+
+`mkstemp` actually modifies its input string. Meaning it cannot be a `const char` string. 
+
+An alternative solution (that doesn't uses the stack), may be simply to declare the `fname` string as a `static` variable, hence storing it over the writeable data section. \
+Note it is vulnerable within multithreaded applications in this way, tho. 
+
+Finally, another real-world bad example:
+
+```c
+const char *get_dirname(const char *pathname) {
+  char *slash;
+  slash = strrchr(pathname, '/');
+  if (slash) {
+    *slash = '\0'; /* Undefined behavior */
+  }
+  return pathname;
+}
+```
+
+While the usage of `strrchr` is fine, being a read-only function, and returning a pointer to certain offset within `pathname`, the usage of the returned `slash` as a modify-able string may write read only memory. 
+
+### STR31-C
+
+Gurantee the storage of the destination string has sufficient space for character data. 
+
+For example:
+
+```c
+void copy(size_t n, char src[n], char dest[n]) {
+   size_t i;
+  
+   for (i = 0; src[i] && (i < n); ++i) {
+     dest[i] = src[i];
+   }
+   dest[i] = '\0';
+}
+```
+
+This code has 2 major vulnerabilities:
+
+1. OOB read - `src[i]` is being checked prior to `(i < n)`. \
+It means that in case `src` first `n` bytes are all non-null-bytes, `src[n]` would be read prior to the check. \
+For sophisticated attacks, this memory byte might not be mapped, therefore leading to a segmentation fault.
+
+2. OOB write - off-by-one. \
+The loop iterates a maximum of `n` times. \
+After its completion, the index `i` might have the value of `n`, hence setting `dest[n] = '\0'` - causing an off-by-one write. 
+
+This loop pattern is actually very common.
+
+A *good* coding example, involving `snprintf`:
+
+```c
+void func(const char *name) {
+  char filename[128];
+  int result = snprintf(filename, sizeof(filename), "%s.txt", name);
+  if (result != strlen(filename) {
+    /* truncation occurred */
+  }
+}
+```
+
+Because `snprintf` copies up to `n` bytes, including the null-terminator, the posed check is correct. \
+Note that its return value upon an unsuccessfull return, denotes the number of characters (excluding the null byte) which would have been written, if `n` was infinite. \
+Therefore, the manual page recommends to check if the return value is `retval >= n`, in order to determine for truncation. \
+It means another possible correct check is to verify `result < sizeof(filename)`. 
+
+Note `snprintf` is vulnerable to overlapping source and destination buffers. 
+
+### STR34-C
+
+Before converting characters to large integer sizes, convert them to unsigned types. 
+
+This is mainly because of implicit conversions to `int`, which may cause deep sign-extension issues. 
+
+#### Tricky Assignment
+
+```c
+char *c_str;
+int c;
+ 
+c_str = bash_input.location.string;
+c = EOF;
+ 
+/* If the string doesn't exist or is empty, EOF found*/
+if (c_str && *c_str) {
+  c = *c_str++;
+  bash_input.location.string = c_str;
+}
+```
+
+The root problem is the assignment `c = *c_str++`. \
+Since `c` is an `int`, and `c_str` points to a signed (by default) `char`, the assignment causes a sign extension of the small character. \
+In case the character's MSb is 1, meaning `*c_str >= 0x80`, the integer conversion would add many 1's, resulting with some negative value (or large unsigned value, if the result `c` would be converted to some unsigned type).
+
+Since the value of `EOF == -1`, upon an occurance of character byte `0xff == -1`, `c` would be assigned with the value of `EOF`!
+
+A smarty-pants suggestion would be declaring `c_str` as an `unsigned char *`. 
+
+Note, however, that upon an assignment from a smaller type to some large type, the smaller type is promoted to an `int` (nly if it is not representable as an int - it would be promoted to `unsigned int`). 
+
+Meaning, even in this case - the sign extension still occurs. 
+
+The correct solution for this case:
+
+```c
+c = (unsigned char)*c_str++;
+```
+
+Meaning, after the implicit conversion to int, case it back to an unsigned character. 
+
+#### Tricky Indexing
+
+```c
+static const char table[UCHAR_MAX + 1] = { 'a' /* ... */ };
+ 
+ptrdiff_t first_not_in_table(const char *c_str) {
+  for (const char *s = c_str; *s; ++s) {
+    if (table[(unsigned int)*s] != *s) {
+      return s - c_str;
+    }
+  }
+  return -1;
+}
+```
+
+`UCHAR_MAX == 255`, meaning after pre-processing, `table` declaration is as follow:
+
+```c
+static const char table[255 + 1] = { 'a' /* ... */ };
+```
+
+Meaning 256 character entries, located within the `.data` section. 
+
+The convertion to the array index is very tricky: `table[(unsigned int)*s]`. \
+In order for the conversion `char -> unsigned int` to occur, the underlying character is first promoted to a `signed int`! \
+Only then, it is converted to `unsigned int`. 
+
+This means that a character with MSb of '1' would be converted to some huge number, hence producing an OOB-write. \
+A correct implementation should only promote to `unsigned char`, instead. 
+
+Also note the substraction `s - c_str`. \
+This value is stored as a signed type, of `ptrdiff_t`. \
+In case the difference between the pointed addresses is large enough, a wrap around may occur. 
+
+### STR37-C
+
+Arguments to character handling functions must be `unsigned char`. \
+For example, methods such as `isspace, isupper, isascii` - all expects an `int` argument. \
+This is because of the legacy intepreting of literal char, e.g. `'c'` as an `int`. \
+It means that signed chars might get sign extended, to `int` length. 
+
+Therefore, characters such as `0xff` would be converted to `0xffffffff == EOF`, leading to unexpected behavior. 
+
+The following example causes unexpected behavior:
+
+```c
+size_t count_preceding_whitespace(const char *s) {
+  const char *t = s;
+  size_t length = strlen(s) + 1;
+  while (isspace(*t) && (t - s < length)) {
+    ++t;
+  }
+  return t - s;
+} 
+```
+
+As `*t` implicitly converted, and sign-extended to an `int`. 
+
+The solution should call `isspace((unsigned char)*t)`.
+
+
+### STR38-C
+
+Do not confuse between wide strings with narrow strings, and vice-versa. 
+
+```c
+wchar_t wide_str1[]  = L"0123456789";
+wchar_t wide_str2[] =  L"0000000000";
+ 
+strncpy(wide_str2, wide_str1, 10);
+```
+
+The above code is wrong, as `strncpy` expects a narrow string. \
+A correct usage, would use `wcsncpy` instead. 
+
+Another example:
+
+```c
+wchar_t wide_str1[] = L"0123456789";
+wchar_t *wide_str2 = (wchar_t*)malloc(strlen(wide_str1) + 1);
+```
+
+The usage of `strlen` on a wide string results with a funny behavior - because multibyte chars may contain `\x00` as one of their bytes, `strlen` would stop its iteration by encountering one of these, resulting with too small value for the string actual length. 
+
+It would lead to an under-allocation for `wide_str2`. 
+
+Instead, `wcslen` should be used:
+
+```c
+wchar_t *wide_str2 = (wchar_t *)malloc(
+    (wcslen(wide_str1) + 1) * sizeof(wchar_t));
+```
+
+
+
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard
 [cwe-c]: https://cwe.mitre.org/data/slices/658.html
 [rlogin-vuln]: https://resources.sei.cmu.edu/library/asset-view.cfm?assetID=13161

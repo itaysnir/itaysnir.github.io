@@ -42,12 +42,14 @@ mount | grep huge
 Release all `hugetlbfs` filesystems:
 
 ```bash
-umount `awk '/hugetlbfs/ {print $2}' /proc/mounts`
+sudo umount `awk '/hugetlbfs/ {print $2}' /proc/mounts`
 ```
 
 ## Extra Links
 
-[DPDK][dpdk-link]
+[DPDK][dpdk-link], [linux][linux-hugetlb-reserve], [lwn][lwn]
 
 
 [dpdk-link]: https://doc.dpdk.org/guides-17.02/linux_gsg/nic_perf_intel_platform.html
+[linux-hugetlb-reserve]: https://www.kernel.org/doc/html/v5.0/vm/hugetlbfs_reserv.html
+[lwn]: https://lwn.net/Articles/375096/#:~:text=Hugetlbfs%20is%20a%20bare%20interface,backing%20regions%20with%20huge%20pages.
