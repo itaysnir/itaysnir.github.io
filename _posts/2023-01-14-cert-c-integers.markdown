@@ -119,6 +119,29 @@ return 0;
 
 Since there is no lower-bounds checking, an OOB write may occur, for negative `pos` values.
 
+## Evaluation Order Errors
+
+It is pretty common paradigm to use the `++` operator. \
+However, it might be pretty risky, as surprising behavior might occur.
+
+For example:
+
+```c
+void my_func(int a, int b){
+    printf("a=%d b=%d\n",a , b);
+}
+
+int a = 1, b = 1;
+my_func(a++, b++);
+```
+
+The reader might be surprised to see that `a=1 b=1` would be printed, instead of `a=2 b=2`. 
+
+This is because aftermost `++` operator is evaluated only AFTER the expression evaluation have completed. 
+
+A straightforward operator is the preceding `++` operator, for example `++a`. \
+It first increments the integer number, and only then evaluates the whole expression. 
+
 ## CERT C Examples
 
 ### INT31-C

@@ -1080,6 +1080,484 @@ wchar_t *wide_str2 = (wchar_t *)malloc(
     (wcslen(wide_str1) + 1) * sizeof(wchar_t));
 ```
 
+### ARR30-C
+
+Beware of out-of-bounds pointers / array subscripts. 
+
+#### Subscript OOB
+
+```c
+enum { TABLESIZE = 100 };
+ 
+static int table[TABLESIZE];
+ 
+int *f(int index) {
+  if (index < TABLESIZE) {
+    return table + index;
+  }
+  return NULL;
+}
+```
+
+Since `table` is actually array, it follows pointer arithmetics. \
+Meaning, the actual returned value is the address corresponding to `table + 4 * index`. 
+
+However, the possible problem, is due to the usage of signed integer. \
+Meaning, `index` may be some negative value, hence returning an address prior to the `table` memory location, forming an OOB. 
+
+#### Microsoft DCOM RPC Vuln
+
+```c
+error_status_t _RemoteActivation(
+      /* ... */, WCHAR *pwszObjectName, ... ) {
+   *phr = GetServerPath(
+              pwszObjectName, &pwszObjectName);
+    /* ... */
+}
+ 
+HRESULT GetServerPath(
+  WCHAR *pwszPath, WCHAR **pwszServerPath ){
+  WCHAR *pwszFinalPath = pwszPath;
+  WCHAR wszMachineName[MAX_COMPUTERNAME_LENGTH_FQDN+1];
+  hr = GetMachineName(pwszPath, wszMachineName);
+  *pwszServerPath = pwszFinalPath;
+}
+ 
+HRESULT GetMachineName(
+  WCHAR *pwszPath,
+  WCHAR wszMachineName[MAX_COMPUTERNAME_LENGTH_FQDN+1])
+{
+  pwszServerName = wszMachineName;
+  LPWSTR pwszTemp = pwszPath + 2;
+  while (*pwszTemp != L'\\')
+    *pwszServerName++ = *pwszTemp++;
+  /* ... */
+}
+```
+
+`pwszPath` is a pointer to wide string, meaning each character is represented by at least 2 bytes. \
+Also note that `_RemoteActivation` actually passes a copy of the pointer as `pwszPath`, and the address *within its own stack frame* as `pwszServerPath`. \
+
+The root vulnerability here is within `GetMachineName`. \
+There are actually few bugs within this function:
+
+1. `pwszPath` may by a null pointer. \
+Also, it may be pointing to empty string - meaning the assignment `LPWSTR pwszTemp = pwszPath + 2` may trigger OOB-read. 
+
+2. Bad pointer arithmetics, again with `LPWSTR pwszTemp = pwszPath + 2`. \
+Since `pwszPath` is `WCHAR *`, this assignment actually stores the address of `(uint8_t*)pwszPath + 4`! \
+Meaning, the first TWO wide character are skipped, not the first two bytes. 
+
+3. Critical - the while loop doesn't checks for `wszMachineName` actual length, and only stops if the source string `pwszTemp` is encountered with an `'\'` wide char. \
+Therefore, this loop may easily write past the buffer. 
+
+4. Out of bounds read, for `*pwszTemp != L'\\'`, as the whole source string may not contain any `'\'` wide char.
+
+
+#### Integer OVF, OOB-W, Unbound variable
+
+
+```c
+static int *table = NULL;
+static size_t size = 0;
+ 
+int insert_in_table(size_t pos, int value) {
+  if (size < pos) {
+    int *tmp;
+    size = pos + 1;
+    tmp = (int *)realloc(table, sizeof(*table) * size);
+    if (tmp == NULL) {
+      return -1;   /* Failure */
+    }
+    table = tmp;
+  }
+ 
+  table[pos] = value;
+  return 0;
+}
+```
+
+This code have few problems:
+
+1. The assignment `size = pos + 1` may wrap around, due to an integer overflow. \
+Assuming `pox = 0xffffffff > size`, it will enter the block, and wrap around. \
+This would lead to `realloc` of size `0`, which means `table` would be freed (and `NULL` would return). 
+
+On the next insertion, it would be possible to overwrite heap metadata, as `table` is now considered within some freelist. 
+
+2. Another integer overflow, this time with:
+`tmp = (int *)realloc(table, sizeof(*table) * size)`.
+
+Because we may control `size`, the multiplication may be easily wrap around, again - leading to `realloc(ptr, 0) == free(ptr)`. 
+
+This time tt is also possible to wrap around to some positive value, for example `realloc(ptr, 4)`. \
+This should not return a null pointer, but a direct under-allocation, hence heap overflow. 
+
+3. In case `pos == size`, the code would still perform an OOB-write! \
+This is because `table[size] = value` would be issued.
+
+4. This one is abit tricky to catch - the code first increases `size`, whether or not the `realloc` called have succeeded. \
+This means that consecutive failing calls would increase `size` indefinitely. 
+
+
+#### 2D OOB
+
+A simple confusion between the dimensions indices:
+
+```c
+#define COLS 5
+#define ROWS 7
+static int matrix[ROWS][COLS];
+ 
+void init_matrix(int x) {
+  for (size_t i = 0; i < COLS; i++) {
+    for (size_t j = 0; j < ROWS; j++) {
+      matrix[i][j] = x;
+    }
+  }
+}
+```
+
+#### Null Ptr Arithmetics
+
+```c
+char *init_block(size_t block_size, size_t offset,
+                 char *data, size_t data_size) {
+  char *buffer = malloc(block_size);
+  if (data_size > block_size || block_size - data_size < offset) {
+    /* Data won't fit in buffer, handle error */
+  }
+  memcpy(buffer + offset, data, data_size);
+  return buffer;
+}
+```
+
+This code doesn't check if the allocation has failed, but process with `buffer` anyways.
+
+In this case, it will be assigned the value of `NULL == 0`, meaning arbitrary write is possible by controlling `offset` value. 
+
+
+### ARR32-C
+
+Beware of size arguments, especially in VLAs. \
+Of course, wrap arounds can also occur within `sizeof()`. 
+
+```c
+void *func(size_t n2) {
+  typedef int A[n2][N1];
+ 
+  A *array = malloc(sizeof(A));
+  if (!array) {
+    /* Handle error */
+    return NULL;
+  }
+ 
+  for (size_t i = 0; i != n2; ++i) {
+    memset(array[i], 0, N1 * sizeof(int));
+  }
+ 
+  return array;
+}
+```
+
+Most C compilers actually supports VLAs (arrays of length which is a function parameter). 
+
+There are few problems with this code:
+
+1. `A *array = malloc(sizeof(A))`:
+A better paradigm is to avoid usage of such static types. \
+Always prefer variables, for example `malloc(sizeof(*array))`. 
+
+Note that there is an underlying integer overflow. \
+Since `sizeof(A) = n2 * N1 * sizeof(int)`, this multiplication may actually wrap around, for large values of `n2`. 
+
+2. OOB-write due to wrong indexing:
+`array[i]` actually jumps by `i * sizeof(A)` bytes, instead of `i * N1 * sizeof(int)`.
+
+### ARR36-C
+
+Beware of comparing pointers that do not refer to the same object. 
+
+For example:
+
+```c
+enum { SIZE = 32 };
+  
+void func(void) {
+  int nums[SIZE];
+  int end;
+  int *next_num_ptr = nums;
+  size_t free_elements;
+ 
+  /* Increment next_num_ptr as array fills */
+ 
+  free_elements = &end - next_num_ptr;
+}
+```
+
+This program assumes that `nums` array is adjacent to the `end` local variable in memory. \
+This isn't true, as there might be padding, or even worse - another order of the local variables withing the stack. 
+
+A correct solution would look similar to the following:
+
+```c
+free_elements = &(nums[SIZE]) - next_num_ptr;
+```
+
+### ARR37-C
+
+Beware of integer to pointer arithmetic operations. 
+
+For example:
+
+```c
+struct numbers {
+  short num_a, num_b, num_c;
+};
+ 
+int sum_numbers(const struct numbers *numb){
+  int total = 0;
+  const short *numb_ptr;
+ 
+  for (numb_ptr = &numb->num_a;
+       numb_ptr <= &numb->num_c;
+       numb_ptr++) {
+    total += *(numb_ptr);
+  }
+ 
+  return total;
+}
+ 
+int main(void) {
+  struct numbers my_numbers = { 1, 2, 3 };
+  sum_numbers(&my_numbers);
+  return 0;
+}
+```
+
+`numb` is a pointer towards some local stack address. \
+The key problem is the increment `numb_ptr++` within the loop. \
+This increment increases the pointed address by `sizeof(short)`, as this is pointers arithmetic. 
+
+However, `struct numbers` is modifiable by the compiler, so it will be 16-bytes aligned. \
+This means the compiler might add padding anywhere within the struct, so that its 3 fields aren't necessarily packed. 
+
+A better solution would be defining the struct with contigious field:
+
+```c
+struct numbers {
+  short a[3];
+};
+```
+
+### ARR38-C
+
+Beware of library functions, which may forge invalid pointers. \
+There are some C functions that make changes to the arrays, taking two arguments - a pointer and length / number of elements. 
+
+Few example functions: `fgets, memchr, strncat, strftime, setvbuf, snprintf, memset, etc`.
+
+Vuln code examples:
+
+#### Wide Strings Misuse
+
+```c
+static const char str[] = "Hello world";
+static const wchar_t w_str[] = L"Hello world";
+void func(void) {
+  char buffer[32];
+  wchar_t w_buffer[32];
+  memcpy(buffer, str, sizeof(str)); /* Compliant */
+  wmemcpy(w_buffer, w_str, sizeof(w_str)); /* Noncompliant */
+}
+```
+
+The `sizeof` operator returns the real size of `w_str` within bytes. \
+However, `wmemcpy` expects element count based on `wchar_t`.
+
+A possible solution is to divide this result by `sizeof(wchar_t)`, or better - to use wide-chars dedicated function:
+
+```c
+wmemcpy(w_buffer, w_str, wcslen(w_str) + 1);
+```
+
+#### Pointer + Integer 
+
+This code may cause easy off-by-one:
+
+```c
+void f1(size_t nchars) {
+  char *p = (char *)malloc(nchars);
+  /* ... */
+  const size_t n = nchars + 1;
+  /* ... */
+  memset(p, 0, n);
+}
+```
+
+Note there is a possibility of an integer overflow for `n`. 
+
+A better example:
+
+```c
+void f2(void) {
+  const size_t ARR_SIZE = 4;
+  long a[ARR_SIZE];
+  const size_t n = sizeof(int) * ARR_SIZE;
+  void *p = a;
+ 
+  memset(p, 0, n);
+}
+```
+
+For platforms where `sizeof(int) != sizeof(long)`, an under-allocation would occur.
+
+A better solution would be performing `n = sizeof(a)` instead.
+
+#### Two Pointers + Integer
+
+Especially relevant to the classic `memcpy, strncpy, memcmp, memmove, strncmp, etc`
+. \ 
+For these functions, the length should not be greater than any of the input buffers sizes. 
+
+For example, the following code is buggy:
+
+```c
+void f4() {
+  char p[40];
+  const char *q = "Too short";
+  size_t n = sizeof(p);
+  memcpy(p, q, n);
+}
+```
+
+As there is an OOB-read primitive, due to reading past `q`. 
+
+#### One Pointer + Two Integers
+
+For example, `fread, bsearch, fwrite, qsort, calloc`. \
+Usually, the total size is a product of two size arguments. 
+
+Note such functions are usually vulnerable to integer wrap-arounds. 
+
+Example:
+
+```c
+struct obj {
+  char c;
+  long long i;
+};
+  
+void func(FILE *f, struct obj *objs, size_t num_objs) {
+  const size_t obj_size = 16;
+  if (num_objs > (SIZE_MAX / obj_size) ||
+      num_objs != fwrite(objs, obj_size, num_objs, f)) {
+    /* Handle error */
+  }
+}
+```
+
+A problem might raise in case `sizeof(obj) != 16`, as the `num_objs` might be miscalculated.
+
+A better paradigm is to use `sizeof(*objs)` instead. 
+
+Another example:
+
+```c
+void f(FILE *file) {
+  enum { BUFFER_SIZE = 1024 };
+  wchar_t wbuf[BUFFER_SIZE];
+ 
+  const size_t size = sizeof(*wbuf);
+  const size_t nitems = sizeof(wbuf);
+ 
+  size_t nread = fread(wbuf, size, nitems, file);
+  /* ... */
+}
+```
+
+This is tricky - `sizeof(*wbuf) == sizeof(wchar_t)`, while `sizeof(wbuf) == sizeof(wchar_t) * BUFFER_SIZE`. 
+
+Therefore, the total amount of bytes read are `sizeof(wchar_t) * sizeof(wchar_t) * BUFFER_SIZE`, which may cause OOB-write. 
+
+Another bad option is wrap-arounds. 
+
+A possible solution is to fix `nitems = sizeof(wbuf) / size`.
+
+### ARR39-C
+
+Pointers arithmetics are dangerous. 
+
+Classic example:
+
+```c
+enum { INTBUFSIZE = 80 };
+ 
+extern int getdata(void);
+int buf[INTBUFSIZE];
+  
+void func(void) {
+  int *buf_ptr = buf;
+ 
+  while (buf_ptr < (buf + sizeof(buf))) {
+    *buf_ptr++ = getdata();
+  }
+}
+```
+
+`buf` is an integer array, which means it follows `int *` pointer arithmetics. \
+`sizeof(buf)` returns its result in bytes, meaning `sizeof(int) * INTBUFSIZE`. 
+
+Because of pointer arithmetcis, the actual value that is being added to `buf` is `sizeof(int) * INTBUFSIZE * sizeof(int)`! 
+
+It means that `buf_ptr` may exceed its intended value, hence OOB-write. 
+
+Another real world example:
+
+```c
+struct big {
+  unsigned long long ull_a;
+  unsigned long long ull_b;
+  unsigned long long ull_c;
+  int si_e;
+  int si_f;
+};
+ 
+void func(void) {
+  size_t skip = offsetof(struct big, ull_b);
+  struct big *s = (struct big *)malloc(sizeof(struct big));
+  if (s == NULL) {
+    /* Handle malloc() error */
+  }
+ 
+  memset(s + skip, 0, sizeof(struct big) - skip);
+  /* ... */
+  free(s);
+  s = NULL;
+}
+```
+
+The vulnerability is caused by `s + skip`. \
+Again, because of pointers arithmetics, the actual memory address that would be written to, is `s + skip * sizeof(struct big)`, not `s + skip`. 
+
+This will cause some serius OOB-write. 
+
+Another example:
+
+```c
+enum { WCHAR_BUF = 128 };
+  
+void func(void) {
+  wchar_t error_msg[WCHAR_BUF];
+ 
+  wcscpy(error_msg, L"Error: ");
+  fgetws(error_msg + wcslen(error_msg) * sizeof(wchar_t),
+         WCHAR_BUF - 7, stdin);
+  /* ... */
+}
+```
+
+Again, `error_msg` follows `wchar_t *` pointers arithmetics, and therefore the addition causes some serious OOB-write. 
 
 
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard
