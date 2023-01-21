@@ -384,6 +384,566 @@ These types of bugs are so common, that the first ever DR (defect-record-400) of
 This feature is so terrible, that it was even declared as an *obsolescent feature* - which shouldn't be used at all, according to `MSC23-C`.
 
 
+## CERT C Examples
+
+### MEM00-C
+
+Freeing memory in different modules may cause some very non trivial vulns. \
+For example, MIT Kerberos 5 - which contained error-handling logic, that freed memory in addition to other external libraries error handling, which yield double free vuln. 
+
+```c
+enum { MIN_SIZE_ALLOWED = 32 };
+ 
+int verify_size(char *list, size_t size) {
+  if (size < MIN_SIZE_ALLOWED) {
+    /* Handle error condition */
+    free(list);
+    return -1;
+  }
+  return 0;
+}
+ 
+void process_list(size_t number) {
+  char *list = (char *)malloc(number);
+  if (list == NULL) {
+    /* Handle allocation error */
+  }
+ 
+  if (verify_size(list, number) == -1) {
+      free(list);
+      return;
+  }
+ 
+  /* Continue processing list */
+ 
+  free(list);
+}
+```
+
+This code contains a double-free vuln, resulting from memory being allocated and freed at different levels of abstraction. 
+
+### MEM01-C
+
+Right after `free()`ing a pointer, store a new value `NULL` in it. 
+
+For example:
+
+```c
+char *message;
+int message_type;
+ 
+/* Initialize message and message_type */
+ 
+if (message_type == value_1) {
+  /* Process message type 1 */
+  free(message);
+}
+/* ...*/
+if (message_type == value_2) {
+   /* Process message type 2 */
+  free(message);
+}
+```
+
+Upon calling this flow multiple times, a double free vuln may occur. 
+
+A better paradigm is to set `message = NULL` after `free`. \
+Because `free(NULL)` doesn't do anything, this paradigm is perfectly fine. 
+
+
+### MEM02-C
+
+memory allocation results should be casted to the allocated type immediately. 
+
+```c
+typedef struct gadget gadget;
+struct gadget {
+  int i;
+  double d;
+};
+ 
+typedef struct widget widget;
+struct widget {
+  char c[10];
+  int i;
+  double d;
+};
+ 
+widget *p;
+ 
+/* ... */
+ 
+p = malloc(sizeof(gadget)); /* Imminent problem */
+if (p != NULL) {
+  p->i = 0;                 /* Undefined behavior */
+  p->d = 0.0;               /* Undefined behavior */
+}
+```
+
+The above code implicitly sets the type of the allocated chunk, which is of legnth `gadget`, to `widget`. \
+Accessing its fields may lead to UB. 
+
+### MEM03-C
+
+Clear memory from reusable resources. 
+
+```c
+char *secret;
+/* Initialize secret to a null-terminated byte string,
+   of less than SIZE_MAX chars */
+ 
+size_t size = strlen(secret);
+char *new_secret;
+new_secret = (char *)malloc(size+1);
+if (!new_secret) {
+  /* Handle error */
+}
+strcpy(new_secret, secret);
+ 
+/* Process new_secret... */
+ 
+free(new_secret);
+new_secret = NULL;
+```
+
+The problem with this code, is the `new_secret` data still remains on the heap memory. \
+For sensitive content, a non-compiled-able `memset_s` of null bytes should be called, prior to `free`ing the `new_secret` variable. 
+
+Moreover, usages of `calloc(size + 1, 1)` is better, as it initializes the given secret memory to 0. 
+
+### MEM04-C
+
+zero-length allocations are implementation-defined. \
+Either a `NULL` pointer returned, a small chunk is allocated, or a zero-length heap buffer is allocated (hence, only metadata). 
+
+### MEM05-C
+
+Avoid large stack allocations. \
+Especially in situations where the attacker may control its length (VLAs / recursive allocations). 
+
+For example:
+
+```c
+unsigned long fib1(unsigned int n) {
+  if (n == 0) {
+    return 0;
+  }
+  else if (n == 1 || n == 2) {
+    return 1;
+  }
+  else {
+    return fib1(n-1) + fib1(n-2);
+  }
+}
+```
+
+An attacker may control the recursive depth.\
+For each step, a stack frame is being allocated. 
+
+Therefore, exhausion of the stack memory is possible, leading to DoS for example (or limiting the entropy of ASLR, etc).
+
+### MEM06-C
+
+Beware of sensitive data being written to disk.
+
+Two common mechanisms are swapping (paging), and core dumps.
+
+Assuming attacker may crash the program during its runtime, or swap out a page of his wish, the following code may leak secret data into the disk:
+
+```c
+char *secret;
+ 
+secret = (char *)malloc(size+1);
+if (!secret) {
+  /* Handle error */
+}
+ 
+/* Perform operations using secret... */
+ 
+memset_s(secret, '\0', size+1);
+free(secret);
+secret = NULL;
+```
+
+The solution is to use `setrlimit` to prevent any core dump being generated. 
+
+Moreover, paging may be disabled via `mlock` - meaning the memory would never be copied to hard disk. 
+
+```c
+#include <sys/resource.h>
+/* ... */
+struct rlimit limit;
+limit.rlim_cur = 0;
+limit.rlim_max = 0;
+if (setrlimit(RLIMIT_CORE, &limit) != 0) {
+    /* Handle error */
+}
+ 
+long pagesize = sysconf(_SC_PAGESIZE);
+if (pagesize == -1) {
+  /* Handle error */
+}
+ 
+char *secret_buf;
+char *secret;
+ 
+secret_buf = (char *)malloc(size+1+pagesize);
+if (!secret_buf) {
+  /* Handle error */
+}
+ 
+/* mlock() may require that address be a multiple of PAGESIZE */
+secret = (char *)((((intptr_t)secret_buf + pagesize - 1) / pagesize) * pagesize);
+ 
+if (mlock(secret, size+1) != 0) {
+    /* Handle error */
+}
+ 
+/* Perform operations using secret... */
+ 
+if (munlock(secret, size+1) != 0) {
+    /* Handle error */
+}
+secret = NULL;
+ 
+memset_s(secret_buf, '\0', size+1+pagesize);
+free(secret_buf);
+secret_buf = NULL;
+```
+
+### MEM07-C
+
+Beware of integer wraps-arounds inside library function calls. 
+
+A classic example is `calloc`:
+
+```c
+size_t num_elements;
+ 
+long *buffer = (long *)calloc(num_elements, sizeof(long));
+if (buffer == NULL) {
+  /* Handle error condition */
+}
+/* ... */
+free(buffer);
+buffer = NULL;
+```
+
+The multiplication of `num_elements * sizeof(long)` may wrap around, leading to an under-allocation. 
+
+### MEM11-C
+
+Do not assume infinite heap memory.
+
+Example vuln:
+
+```c
+enum {MAX_LENGTH=100};
+ 
+typedef struct namelist_s {
+  char name[MAX_LENGTH];
+  struct namelist_s* next;
+} *namelist_t;
+ 
+int main() {
+  namelist_t names = NULL;
+  char new_name[MAX_LENGTH];
+ 
+  do {
+    /*
+     * Adding unknown number of records to a list;
+     * the user can enter as much data as he wants
+     * and exhaust the heap.
+     */
+    puts("To quit, enter \"quit\"");
+    puts("Enter record:");
+    fgets(new_name, MAX_LENGTH, stdin);
+    if (strcmp(new_name, "quit") != 0) {
+      /*
+       * Names continue to be added without bothering
+       * about the size on the heap.
+       */
+      unsigned int i = strlen(new_name) - 1;
+      if (new_name[i] == '\n') new_name[i] = '\0';
+      namelist_t new_entry = (namelist_t) malloc(sizeof( struct namelist_s));
+      if (new_entry == NULL) {
+        /* Handle error */
+      }
+      strcpy( new_entry->name, new_name);
+      new_entry->next = names;
+      names = new_entry;
+    }
+    puts(new_name);
+  } while (strcmp( new_name, "quit") != 0);
+ 
+  return 0;
+}
+```
+
+### MEM12-C
+
+Use a goto chain upon error. 
+
+Example leakage:
+
+```c
+typedef struct object {  /* Generic struct: contents don't matter */
+  int propertyA, propertyB, propertyC;
+} object_t;
+ 
+errno_t do_something(void){
+  FILE *fin1, *fin2;
+  object_t *obj;
+  errno_t ret_val;
+   
+  fin1 = fopen("some_file", "r");
+  if (fin1 == NULL) {
+    return errno;
+  }
+ 
+  fin2 = fopen("some_other_file", "r");
+  if (fin2 == NULL) {
+    fclose(fin1);
+    return errno;
+  }
+ 
+  obj = malloc(sizeof(object_t));
+  if (obj == NULL) {
+    ret_val = errno;
+    fclose(fin1);
+    return ret_val;  /* Forgot to close fin2!! */
+  }
+ 
+  /* ... More code ... */
+ 
+  fclose(fin1);
+  fclose(fin2);
+  free(obj);
+  return NOERR;
+}
+```
+
+A correct solution may has a single `goto` label (which then identifies which resources should be handled back), or just multiple labels usage:
+
+```c
+SUCCESS:     /* Clean up everything */
+  free(obj);
+ 
+FAIL_OBJ:   /* Otherwise, close only the resources we opened */
+  fclose(fin2);
+ 
+FAIL_FIN2:
+  fclose(fin1);
+ 
+FAIL_FIN1:
+  return ret_val;
+```
+
+However, these kind of teardowns may be too large, and non-scalable, such as `copy_process` from the Linux kernel(under `kernel/fork.c`). 
+
+
+
+### MEM30-C
+
+Do not access freed object / double free. 
+
+#### Real World Double Free
+
+```c
+void f(char *c_str1, size_t size) {
+  char *c_str2 = (char *)realloc(c_str1, size);
+  if (c_str2 == NULL) {
+    free(c_str1);
+  }
+}
+```
+
+However, upon supplying `size == 0`, `realloc` would call `free(c_str1)`, and return a `NULL` ptr. \
+Then, another free would be called, resulting with a double free vuln. 
+
+#### CVE-2009-1364
+
+```c
+void gdClipSetAdd(gdImagePtr im, gdClipRectanglePtr rect) {
+  gdClipRectanglePtr more;
+  if (im->clip == 0) {
+   /* ... */
+  }
+  if (im->clip->count == im->clip->max) {
+    more = gdRealloc (im->clip->list,(im->clip->max + 8) *
+                      sizeof (gdClipRectangle));
+    /*
+     * If the realloc fails, then we have not lost the
+     * im->clip->list value.
+     */
+    if (more == 0) return;
+    im->clip->max += 8;
+  }
+  im->clip->list[im->clip->count] = *rect;
+  im->clip->count++; 
+}
+```
+
+The above code contains UAF. 
+
+`(im->clip->max + 8) * sizeof (gdClipRectangle)` may wrap around to `0`, meaning `free(im->clip->list)` would be called.
+
+However, since this pointer is still set (within the struct) to some valid heap address, another calls to this function may cause direct writes to the `freed` memory, for example via:
+
+```c
+im->clip->list[im->clip->count] = *rect;
+```
+
+This UAF allows an attacker to corrupt heap metadata. 
+
+Another option is to cause a re-location of the chunk, instead of freeing it - as `realloc` calls may allocate a new chunk, while freeing the old chunk. 
+
+Therefore, it is important to update the returned pointer by `realloc`:
+
+```c
+more = gdRealloc (im->clip->list,(im->clip->max + 8) *
+                      sizeof (gdClipRectangle));
+im->clip->list = more;
+```
+
+### MEM31-C
+
+Free unused buffers, to prevent memory leaks.
+
+```c
+enum { BUFFER_SIZE = 32 };
+ 
+int f(void) {
+  char *text_buffer = (char *)malloc(BUFFER_SIZE);
+  if (text_buffer == NULL) {
+    return -1;
+  }
+  return 0;
+}
+```
+
+The above code causes a memory leak, for every time the function `f` is called. 
+
+### MEM33-C
+
+Flexible array members should be treated with extra care. 
+
+For example, when computing the `sizeof` of the following struct:
+
+```c
+struct flex_array_struct {
+  int num;
+  int data[];
+};
+```
+
+Only the first member is considered. 
+
+Therefore, such structures should always be allocated dynamically. \
+They should also never be copied by value. 
+
+#### Storage Duration
+
+```c
+struct flex_array_struct {
+  size_t num;
+  int data[];
+};
+  
+void func(void) {
+  struct flex_array_struct flex_struct;
+  size_t array_size = 4;
+ 
+  /* Initialize structure */
+  flex_struct.num = array_size;
+ 
+  for (size_t i = 0; i < array_size; ++i) {
+    flex_struct.data[i] = 0;
+  }
+}
+```
+
+The above code has OOB-write upon the assignment `flex_struct.data[i] = 0`, as it was statically under-allocated on the stack.
+
+#### Copying
+
+```c
+struct flex_array_struct {
+  size_t num;
+  int data[];
+};
+  
+void func(struct flex_array_struct *struct_a,
+          struct flex_array_struct *struct_b) {
+  *struct_b = *struct_a;
+}
+```
+
+The above code dereferences both pointers, hence copies the underlying `flex_array_struct` object. 
+
+However, the flexible array member is not considered - only the first member `num`. 
+
+It should be explicitly copied via `memcpy` call.
+
+#### Function Arguments
+
+```c
+struct flex_array_struct {
+  size_t num;
+  int data[];
+};
+  
+void print_array(struct flex_array_struct struct_p) {
+  puts("Array is: ");
+  for (size_t i = 0; i < struct_p.num; ++i) {
+    printf("%d ", struct_p.data[i]);
+  }
+  putchar('\n');
+}
+ 
+void func(void) {
+  struct flex_array_struct *struct_p;
+  size_t array_size = 4;
+ 
+  /* Space is allocated for the struct */
+  struct_p = (struct flex_array_struct *)malloc(
+    sizeof(struct flex_array_struct)
+    + sizeof(int) * array_size);
+  if (struct_p == NULL) {
+    /* Handle error */
+  }
+  struct_p->num = array_size;
+ 
+  for (size_t i = 0; i < array_size; ++i) {
+    struct_p->data[i] = i;
+  }
+  print_array(*struct_p);
+}
+```
+
+Note this bug has implicit conversion from `size_t i` to an `int struct_p->data[i]`. 
+
+The function argument receives a copy of the underlying object, which doesn't have allocated memory for the `data` flexible array member. 
+
+This causes OOB-read of the stack. 
+
+### MEM34-C
+
+call `free` only on dynamically allocated memory. 
+
+For example, do not use `realloc` on statically allocated memory (duh):
+
+```c
+void f(void) {
+  char buf[BUFSIZE];
+  char *p = (char *)realloc(buf, 2 * BUFSIZE);
+  if (p == NULL) {
+    /* Handle error */
+  }
+}
+```
+
+
 [cwe-list]: https://cwe.mitre.org/data/definitions/658.html
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c
 [cert-cpp]: https://wiki.sei.cmu.edu/confluence/pages/viewpage.action?pageId=88046329
