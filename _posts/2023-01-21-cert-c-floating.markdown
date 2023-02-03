@@ -10,7 +10,7 @@ categories: jekyll update
 {:toc}
 ## General
 
-Their common vulnerabilities are described within CERT-C chapter 5 (floating point):
+The common vulnerabilities are described within CERT-C chapter 5 (floating point):
 [cert-c][cert-c]. 
 
 All of the C vulnerabilities are described within [CWE][cwe-c].
@@ -262,7 +262,7 @@ The leading 1 is implied, and left out. \
 These numbers are called *normalized numbers*. 
 
 Using mantissa bits extends the possible range of exponents. \
-Because these bits no longer serve bits of precision, the total precision of extremely small numbers is less than usual - also referred as *denormalized numbers*
+Because these bits no longer serve bits of precision, but as part of the exponent, the total precision of extremely small numbers is less than usual - also referred as *denormalized numbers*
 
 ```c
 float x = 1/3.0;
@@ -317,13 +317,126 @@ A correct solution is to cast the return expression:
 
 ```c
 return (float)(value * 0.1f);
-```
+``` 
 
 Which forces the expected precision. 
 
 A good paradigm is to perform a cast for every return expression, in order to remove the extra range and precision. 
 
+### FLP30-C
 
+Beware of using floats as loop counters. \
+To gain a large dynamic range, floats maintain fixed number of precision bits (mantissa) and exp, which limits the number of significant digits represented. 
+
+For example, because of inaccurate representation of `0.1f` (which requires infinite mantissa size), the following loop may be evaluated only 9 times:
+
+```c
+void func(void) {
+  for (float x = 0.1f; x <= 1.0f; x += 0.1f) {
+    /* Loop may iterate 9 or 10 times */
+  }
+}
+```
+
+In case the `<=` operator would be switched to exact comparision, `!=`, the above would result with an infinite loop.
+
+Another example occurs for large floating point numbers, where the increment amount is too small to change its value, given its precision:
+
+```c
+void func(void) {
+  for (float x = 100000001.0f; x <= 100000010.0f; x += 1.0f) {
+    /* Loop may not terminate */
+  }
+}
+```
+
+### FLP32-C
+
+It is a good paradigm to prevent input range errors, in functions like `sqrt, pow, sin, log` from the `math.h` library.
+
+For example, the following code may result with an UB in case of a negative `x`:
+
+```c
+void func(double x) {
+  double result;
+  result = sqrt(x);
+}
+```
+
+Another example, is a range error, that might occur for an extremely large magnitude:
+
+```c
+void func(double x) {
+  double result;
+  result = sinh(x);
+}
+```
+
+Moreover, another domain error, this time caused by negative `x` + non-integer `y`, or both `x==0, y==0`:
+
+```c
+void func(double x, double y) {
+  double result;
+  result = pow(x, y);
+}
+```
+
+Note that the result may not be representable as a `double`.
+
+### FLP34-C
+
+Beware of floats conversions, and smaller precision in particular. 
+
+When a `float` is converted to an integer type, the fractional part is truncated toward zero. 
+
+When a value of integer type is converted to `float`, if the value can be represented exactly as a `float`, it is unchanged. \
+However, if it is in a range of representable numbers, but not representable, the result is the nearest higher / lower (platform dependent) `float`. \
+If the value is outside of the representable range, UB. \
+These rules also apply to `float` and `double` conversions. 
+
+Note that on platforms following IEEE 754, signed `INF` is supported, so any value is always representable. 
+
+For example:
+
+```c
+void func(double d_a, long double big_d) {
+  double d_b = (float)big_d;
+  float f_a = (float)d_a;
+  float f_b = (float)big_d;
+}
+```
+
+This may cause truncated values, that are outside of the range of the destination types. 
+
+
+### FLP36-C
+
+Conversions from int to floats can lead to loss of precision. 
+
+This is because the maximum number represented by a float is:
+`1.99999 * M`, where the mantissa have a maximal value of `2^21` for 32-bit `floats`, or `2^52` for `double`.
+
+For example, the following yields inaccurate result:
+
+```c
+int main(void) {
+  long int big = 1234567890L;
+  float approx = big;
+  printf("%ld\n", (big - (long int)approx));
+  return 0;
+}
+```
+
+Note that even for an `int32_t`, which has the exact size of `float`, for large numbers loss of precision occurs.
+
+### FLP37-C
+
+Unlike integers, the equivalence of floating point values *is not encoded solely by the bit pattern used to represent the value*. \
+For example, the values of `-0.0` and `0.0` are encoded differently, but will compare as equivalent. 
+
+Similary, two `NAN` floating point values will not compare as equal, despite the bit patterns being identical. 
+
+While comparing with `!=, ==` operation may yield surprising results, it is preferred over stuff such as `memcmp` (but generally `<=` operators are better, yet still in-accurate). 
 
 
 [cert-c]: https://wiki.sei.cmu.edu/confluence/display/c/SEI+CERT+C+Coding+Standard
