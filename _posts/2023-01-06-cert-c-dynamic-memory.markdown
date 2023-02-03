@@ -741,8 +741,6 @@ FAIL_FIN1:
 
 However, these kind of teardowns may be too large, and non-scalable, such as `copy_process` from the Linux kernel(under `kernel/fork.c`). 
 
-
-
 ### MEM30-C
 
 Do not access freed object / double free. 
