@@ -1,0 +1,36 @@
+---
+layout: post
+title:  "BCC Tools"
+date:   2023-02-07 19:59:43 +0300
+categories: jekyll update
+---
+
+**Contents**
+* TOC
+{:toc}
+## General
+
+eBPF is pretty OP. \
+It allows to run sandboxed programs in the kernel, that can be used for cool stuff, such as syscall filtering, tracing, and network filtering (probably the most trivial usage).
+
+Due to its complexity, there are few projects that offer abstraction layers over eBPF - and [BCC][bcc-git] is one of them. 
+
+BCC (BPF Compiler Collection) is a python library that makes it easy to write eBPF code. \
+The callback functions should be written in C, and the pythonic API allows easy hooking of these probes to specific kernel events. 
+
+Extra links for reading: [link0][link0] [link1][link1] [link2][link2] [link3][link3]. 
+
+## Interesting Tools
+
+Under the `tools/` directory of the sources, we can find many useful tools. 
+
+For example, `offcputime.py` is a very usefull tracing tool. \
+It allows watching which thread within the system is blocked (for example, because it is waiting for I/O), and the amount of time it was blocked (`re_scheduled_to_CPU_timestamp - blocked_timestamp`). \
+Moreover, it displays the stack trace and the task name. 
+
+
+[bcc-git]: https://github.com/iovisor/bcc
+[link0]: https://www.iovisor.org/technology/bcc
+[link1]: https://opensource.com/article/17/11/bccbpf-performance
+[link2]: https://www.redhat.com/en/blog/bcc-tools-brings-dynamic-kernel-tracing-red-hat-enterprise-linux-81
+[link3]: https://www.containiq.com/post/bcc-tools
