@@ -18,11 +18,60 @@ Due to its complexity, there are few projects that offer abstraction layers over
 BCC (BPF Compiler Collection) is a python library that makes it easy to write eBPF code. \
 The callback functions should be written in C, and the pythonic API allows easy hooking of these probes to specific kernel events. 
 
-Extra links for reading: [link0][link0] [link1][link1] [link2][link2] [link3][link3]. 
+Extra links for reading: [link0][link0] [link1][link1] [link2][link2] [link3][link3], and [linux-performance][linux-performance].
 
-## Interesting Tools
+## Installation
 
-Under the `tools/` directory of the sources, we can find many useful tools. 
+Requires some dependencies, such as LLVM with BPF support, Clang, cmake. 
+
+```bash
+# For Jammy (22.04)
+sudo apt install -y bison build-essential cmake flex git libedit-dev \
+libllvm14 llvm-14-dev libclang-14-dev python3 zlib1g-dev libelf-dev libfl-dev python3-distutils
+
+git clone https://github.com/iovisor/bcc
+mkdir bcc/build; cd bcc/build
+cmake ..
+make
+sudo make install
+cmake -DPYTHON_CMD=python3 .. # build python3 binding
+pushd src/python/
+make
+sudo make install
+popd
+```
+
+In order to verify the installation, simply run `execsnoop.py` tool. \
+This tool traces over new processes that are being `exec`'ed within the system:
+
+```bash
+PCOMM            PID     PPID    RET ARGS
+ls               7764    2652      0 /usr/bin/ls --color=auto -alF
+```
+
+## Tutorial
+
+### Basic Linux Performance Analysis
+
+First, install the `sysstat` package. \
+The following commands are very handy for basic analysis:
+
+```bash
+uptime
+dmesg | tail
+vmstat 1
+mpstat -P ALL 1
+pidstat 1
+iostat -xz 1
+free -m
+sar -n DEV 1
+sar -n TCP,ETCP 1
+top
+```
+
+### BCC Tools
+
+Under the `tools/` directory of the sources, we can find many useful already-written tools. 
 
 For example, `offcputime.py` is a very usefull tracing tool. \
 It allows watching which thread within the system is blocked (for example, because it is waiting for I/O), and the amount of time it was blocked (`re_scheduled_to_CPU_timestamp - blocked_timestamp`). \
@@ -34,3 +83,4 @@ Moreover, it displays the stack trace and the task name.
 [link1]: https://opensource.com/article/17/11/bccbpf-performance
 [link2]: https://www.redhat.com/en/blog/bcc-tools-brings-dynamic-kernel-tracing-red-hat-enterprise-linux-81
 [link3]: https://www.containiq.com/post/bcc-tools
+[linux-performance]: https://netflixtechblog.com/linux-performance-analysis-in-60-000-milliseconds-accc10403c55
