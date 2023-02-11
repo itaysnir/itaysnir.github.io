@@ -22,7 +22,7 @@ Extra links for reading: [link0][link0] [link1][link1] [link2][link2] [link3][li
 
 ## Installation
 
-Requires some dependencies, such as LLVM with BPF support, Clang, cmake. 
+Installation from upstream sources requires some dependencies, such as LLVM with BPF support, Clang, cmake. 
 
 ```bash
 # For Jammy (22.04)
@@ -48,6 +48,15 @@ This tool traces over new processes that are being `exec`'ed within the system:
 PCOMM            PID     PPID    RET ARGS
 ls               7764    2652      0 /usr/bin/ls --color=auto -alF
 ```
+
+Another simple option, is to download the binaries directly from the ubuntu package manager. \
+However, note that many BCC tools may be outdated:
+
+```bash
+sudo apt install bpfcc-tools
+```
+
+The tools are installed under `/sbin` or `/usr/sbin`, and would end with a `-bpfcc` suffix. 
 
 ## Tutorial
 
