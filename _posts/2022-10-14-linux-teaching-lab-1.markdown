@@ -45,7 +45,7 @@ y (yes) - states a target for object files as built-in (obj-y, part of the kerne
 Objects listed with obj-m are used as modules, or combined in a `built-in.a` archive. 
 
 It is cool to know - the kernel's config file entries are used as this suffix. \
-For example, stating `CONFIG_BTRFS_FS=y` links `btrfs.o` to the kernel, due to the following line of the BTRFS makefile (Kbuild):
+For example, stating `CONFIG_BTRFS_FS=y` links `btrfs.o` to the kernel binary object, due to the following line of the BTRFS makefile (Kbuild):
 
 ```bash
 obj-$(CONFIG_BTRFS_FS) := btrfs.o
@@ -76,30 +76,42 @@ Note `obj-m` states a kernel module, whereas `supermodule-y` states statically l
 
 ## Helper Methods
 The method `pr_debug` allows logging messages.
-These messages are recorded comperhensively under `/var/log/syslog`, as well as in `/var/log/dmesg` (can be seen via `dmesg` call). 
-Note - it is stored at a specially reserved memory area for logging. It is then extracted via a dedicated logging daemon, `syslog`. 
+These messages are recorded comperhensively under `/var/log/syslog`, as well as in `/var/log/dmesg` (can be seen via `dmesg` call). \
+Note - it is stored at a specially reserved memory area for logging, It is then extracted via a dedicated logging daemon, `syslogd`. 
 
 
 ## Static Kernel Debugging
-1. `dmesg` is a friend. use it. 
-Most of the time, wer'e interested on the first generated oops, and its code (R / W oops). The generated message contains the stack content, backtrace, and the `IP` value, at which the oops have occured.
+1. `dmesg` is a friend. use it. \
+Most of the time, wer'e interested on the first generated oops, and its code (R / W oops). \
+The generated message contains the stack content, backtrace, and the `IP` value, at which the oops have occured.
 
-2. We can easily parse the instruction which generated the oops, by using `objdump -dSl` (both source code and assembly display). 
-The trick is to find the VMA (runtime address, as opposed to load address, LMA) of the kernel module, via: `cat /proc/modules`. 
-Then, easy parsing of the kernel module as follow:
+2. We can easily parse the instruction which generated the oops, by using `objdump -dSl` (both source code and assembly display). \
+The trick is to find the loaded address of the module, VMA (runtime address, as opposed to load address, LMA), via: `cat /proc/modules`:
+
+```bash
+# sudo cat /proc/modules
+oops 1280 1 - Loading 0xc89d4000
+netconsole 8352 0 - Live 0xc89ad000
+```
+
+Then, we can parse the compiled kernel module while fixing its loading address:
+
 ```bash
 objdump -dS --adjust-vma=<module_start_from_procfs> <module.ko>
 ```
 
-3. Using `addr2line`: this binary takes a kernel object file, and offset which generated the oops. It returns the equivalent source-code line. 
+3. Using `addr2line`: this binary takes a kernel object file, and offset which generated the oops. \
+It returns the equivalent source-code line that triggered the oops. 
 
 4. Interact with serial port via `minicom` (similar to `screen`). 
 - For real embedded hardware, it is common to use `/dev/ttyS0`. Another option is to use `/dev/ttyUSB`. 
 - For lab VM, a `/dev/pts/X` entry is generated. We can connect this virtual serial port via `minicom -D /dev/pts/X`.
 
-5. Logging kernel messages over the network via the kernel module `netconsole`. 
-Useful if there are no serial ports available / disk doesnt work / terminal doesnt respond. 
+5. Logging kernel messages over the network via the kernel module `netconsole`. \
+Useful if there are no serial ports available / disk doesnt work / terminal doesn't respond. 
+
 Example config (`debugged_machine`, `debugger_machine`):
+
 ```bash
 modprobe netconsole netconsole=6666@192.168.191.130/eth0,6000@192.168.191.1/00:50:56:c0:00:08
 ```
@@ -109,38 +121,47 @@ So the host machine can display messages via:
 
 Or via `syslogd`. 
 
-6. Most useful - `printk`. 
-It also takes a log level macro, which may be found under `linux/kern_levels.h`. This allows routing the messages to different outputs. 
+6. The most common method of them all - `printk`. 
+
+Note that it also takes a log level macro, which may be found under `linux/kern_levels.h`. \
+This allows routing the messages to different outputs. 
 
 ```bash
 KERN_EMERG = 0
+KERN_ALERT = 1
 ...
 KERN_DEBUG = 7
 ```
 
-In order to display `printk` messages in userspace, its log level must be higher than `console_loglevel`. 
-Therefore, the following will enable all messages to be shown at userspace:
-`echo 8 > /proc/sys/kernel/printk`
+In order to display `printk` messages in userspace, its log level must be higher than `console_loglevel`. \
+Therefore, the following will enable all messages to be shown at userspace: `echo 8 > /proc/sys/kernel/printk`
 
-The log files under `/var/log` keep its information between system restarts. 
-These files are populated by `syslogd` and `klogd` - kernel daemons. 
-If both of these daemons are enabled, all incoming kernel messages will be routed towards `/var/log/kern.log`. 
+The log files under `/var/log` keeps its information between system restarts. \
+These files are populated by the `syslogd` and `klogd` kernel daemons. \
+If both of these daemons are enabled, *all* incoming kernel messages will be routed towards `/var/log/kern.log`. 
 
 A simple alternative is the `/var/log/debug` file, which is populated only due to printk messages, stated with `KERN_DEBUG` log level. 
 
 The following macro may become handy to use:
+
 ```c
 #define PRINT_DEBUG \
        printk (KERN_DEBUG "[% s]: FUNC:% s: LINE:% d \ n", __FILE__,
                __FUNCTION__, __LINE__)
 ```
 
-To delete previous log messages:
-`cat /dev/null > /var/log/debug`
+To delete previous log messages: 
+
+```bash
+`cat /dev/null > /var/log/debug`  	# From log file
+dmesg -c 							# Messages from the dmesg command
+```
 
 
 ## Dynamic Kernel Debugging
+
 ### dyndbg
+
 The following [link][dyndbg-link] contains the documentation.
 It is possible to use [debugfs][debugfs] to configure debug options. 
 ```bash
@@ -158,17 +179,31 @@ Flags:
 ```
 
 ### KDB
+
 Performs live debugging and monitoring. Can be used in parallel with GDB.
+
 Activate GDB over serial port:
+
 ```bash
 echo hvc0 > /sys/module/kgdboc/parameters/kgdboc
-
-echo g > /proc/sysrq-trigger  # force the kernel to enter KDB, or ctrl+O g in the terminal
+echo g > /proc/sysrq-trigger  # Force the kernel to enter KDB, or ctrl+O g in the terminal
 ```
-KDB allows printing backtraces, dump trace logs, inserting hardware breakpoints, and modifying memory. See `help` within KDB shell. 
+KDB allows printing backtraces, dump trace logs, inserting hardware breakpoints, and modifying memory. \
+See `help` within KDB shell. 
+
 ```bash
 bph my_var dataw  # HW-bp on write access to my_var
 ```
+
+### Remote GDB
+
+Probably the easiest method. 
+
+Qemu sets up a gdb server, that we can connect to debug a "guest" OS. \
+We can connect to it via `gdb -ex "target remote:1234"`.
+
+Moreover, it is recommended to set the number of CPUs to 1. \
+A more detailed explanation can be found here: [link][kernel-gdb] and [link2][kernel-debug]
 
 ## Exercise 0 - Intro
 
@@ -228,7 +263,7 @@ extern void cleanup_module(void);
 #endif
 ```
 
-In case the driver wasn't compiled as a separate module, but as a kernel builtin, `module_init` is simply equivalent to the kernel's `__initcall`. 
+In case the driver wasn't compiled as a separate module, but as a kernel builtin, `module_init` is simply appended to the kernel's `__initcall` list, which would be all called at boot time at `do_initcalls`. 
 
 On the other hand, if the driver was compiled as a module, we can see `module_init` actually wraps a *new definition* for `init_module`. \
 Recall that `init_module, cleanup_module` are the old-fashion way for defining ctor and dtor module functions. 
@@ -243,28 +278,85 @@ By browsing `kernel/printk/printk.c`, I've found `ignore_loglevel` definition:
 static bool __read_mostly ignore_loglevel;
 ```
 
-That is a kernel global variable, usually being read. 
+That is a kernel global variable, that is usually being read. 
 
 Usually printk functions are associated with a `log-level`, for example `DEBUG, CRITICAL`, etc. \
-By settings this variable to `true`, all kernel messages would be printed to the console. 
+By setting this variable to `true`, all kernel messages would be printed to the console. 
 
 In case this variable is `true`, `suppress_message_printing()` would always return `false`, so `console_emit_next_record` would emit a message. 
 
-Note that `ignore_loglevel` is also a printk module parameter:
+Note that `ignore_loglevel` is also a printk (which is a builtin module) parameter:
 
 ```c
 early_param("ignore_loglevel", ignore_loglevel_setup);
 module_param(ignore_loglevel, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(ignore_loglevel,
 		 "ignore loglevel setting (prints all kernel messages to the console)");
-
 ```
 
 The above code adds `ignore_loglevel` as an `early_param` for the kernel (usually used for the kernel command line, see [here][early-params] for more info about early_params), and also as a `module_param`. \
-This macro allows passing arguments to a module. \
-At runtime, `insmod` fills the variable with any commandline arguments that are given, like `./insmod itay-module.ko itay_mod_param=1`. 
+This macro allows passing arguments to a module, hence controlling the value of `ignore_loglevel` during runtime.
 
-It means that users may change it dynamically via `/sys/module/printk/parameters/ignore_loglevel`.
+We can do so while inserting the module - `insmod` fills the variable with any commandline arguments that are given, like `./insmod itay-module.ko itay_mod_param=1`. 
+
+Users may also change it dynamically via `/sys/module/printk/parameters/ignore_loglevel`.
+
+## Exercise 1 - Kernel module
+
+Compiled the kernel module, and started the VM. 
+
+By executing `dmesg, lsmod`, We can see that initially there are no loaded modules. \
+
+Right after executing `insmod hello_mod.ko`, the string `"Hello!"` was printed, along with two new entries displayed by `dmesg`:
+
+```bash
+hello_mod: loading out-of-tree module taints kernel.
+Hello!
+```
+
+By executing `rmmod hello_mod.ko`, I've teared-down the module. \
+`dmesg` now displayed `"Goodbye!"`.
+
+## Execise 2 - Printk
+
+Note that messages were displayed directly towards the VM console, eventho they were declared as `DEBUG` messages:
+
+```c
+static int my_hello_init(void)
+{
+    pr_debug("Hello!\n");
+    return 0;
+}
+
+static void hello_exit(void)
+{
+    pr_debug("Goodbye!\n");
+}
+```
+
+I assume this is because of the `ignore_loglevel` value. \
+By reading `/sys/module/printk/parameters/ignore_loglevel`, the value of `N` was printed - meaning it was not configured. 
+
+Another option is to rewrite the desired level to `/proc/sys/kernel/printk`. This allows setting the current `console_loglevel` values. \
+It contains 4 values: 
+
+```bash
+# cat /proc/sys/kernel/printk
+15      4       1       7
+```
+
+Those values stands for the current, default, minimum and boot-time-default log levels. 
+
+By setting the current level to 0 via `echo 0 > printk`, loading messages were not displayed on console anymore, but were displayed via `dmesg`. 
+
+## Exercise 3 - Error
+
+Upon compiling this module, many errors are printed. \
+By carefully reading those, we can see that there is a missing kernel header - `linux/module.h`.
+
+After adding this, the module was compiled successfully. 
+
+## Exercise 4 - Sub-modules
 
 
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
@@ -272,3 +364,5 @@ It means that users may change it dynamically via `/sys/module/printk/parameters
 [debugfs]: https://www.opensourceforu.com/2010/10/debugging-linux-kernel-with-debugfs/
 [bootlin-link]: https://elixir.bootlin.com/linux/latest/source
 [early-params]: https://lists.kernelnewbies.org/pipermail/kernelnewbies/2011-July/002709.html
+[kernel-gdb]: https://blog.lexfo.fr/cve-2017-11176-linux-kernel-exploitation-part4.html#debugging-the-kernel-with-gdb
+[kernel-debug]: https://www.cnblogs.com/bsauce/p/11634162.html

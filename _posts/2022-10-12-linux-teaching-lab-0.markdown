@@ -46,6 +46,7 @@ After configuring the default vimrc cscope configuration:
 ## Debugging
 
 ### GDB
+
 For local debugging, the kernel image `vmlinux` can be used. 
 This is especially useful if the kernel was compiled with `-g` flag, and only for static analysis.
 
