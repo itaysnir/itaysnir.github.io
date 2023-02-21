@@ -49,7 +49,7 @@ CheckOptions:
 
 ## Inspecting Options
 
-In order to check any check possible options, issue: 
+In order to display any check possible configure-able options, issue: 
 
 ```bash
 clang-tidy-15 -checks=* --dump-config
@@ -59,10 +59,18 @@ clang-tidy-15 -checks=* --dump-config
 
 The correct way is to utilize dedicated tool, `run-clang-tidy.py`, in order to run clang-tidy multiple times in parallel on different translation units. 
 
-First, make sure the build generated `compile_commands.json` file, meaning `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS` is enabled, and stored on the source project tree. 
+First, make sure the build generated `compile_commands.json` file. \
+Set the cmake flag `-DCMAKE_EXPORT_COMPILE_COMMANDS`, and validate the generated file is stored on the source project tree. 
 
 Then, download a [run-clang-tidy.py][clang-tidy-script] file, and save it under the source project path. 
 
+Finally, execute a command similar to this:
+
+```bash
+run-clang-tidy.py -header-filter='.*' -checks='-*,modernize-use-nullptr'
+```
+
+In case `-checks` is not specified, the `.clang-tidy` configuration file would be taking place. \ 
 See [here][detailed-clang] for more details. 
 
 [clang-tidy-script]: https://github.com/llvm-mirror/clang-tools-extra/blob/master/clang-tidy/tool/run-clang-tidy.py
