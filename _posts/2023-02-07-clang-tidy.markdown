@@ -1,0 +1,69 @@
+---
+layout: post
+title:  "Clang Tidy"
+date:   2023-02-21 19:59:43 +0300
+categories: jekyll update
+---
+
+**Contents**
+* TOC
+{:toc}
+## General
+
+Clang-tidy is a pretty good static analyzer tool. \
+It can be used to find some non-trivial bugs in C / C++ programs.
+
+A configuration file can be used, `.clang-tidy`, to include some sophisticated checks configurations. 
+
+## Installation 
+
+```bash
+sudo apt install clang-tidy-15
+```
+
+## .clang-tidy Skeleton
+
+```yaml
+Checks: "-*,\
+-clang-diagnostic-*,\
+clang-analyzer-*,\
+bugprone-*,\
+misc-*,\
+modernize-*,\
+cert-*,\
+cppcoreguidelines-*,\
+hicpp-*,\
+"
+WarningsAsErrors: true
+AnalyzeTemporaryDtors: false
+FormatStyle: none
+HeaderFileExtensions: ['h', 'hh', 'hpp', 'hxx']
+ImplementationFileExtensions: ['c', 'cc', 'cpp', 'cxx']
+HeaderFilterRegex: 'Source/cm[^/]*\.(h|hxx|cxx)$'
+CheckOptions:
+  - key:   modernize-use-default-member-init.UseAssignment
+    value: '1'
+  - key:   modernize-use-equals-default.IgnoreMacros
+    value: '0'
+```
+
+## Inspecting Options
+
+In order to check any check possible options, issue: 
+
+```bash
+clang-tidy-15 -checks=* --dump-config
+```
+
+## Cmake Integration
+
+The correct way is to utilize dedicated tool, `run-clang-tidy.py`, in order to run clang-tidy multiple times in parallel on different translation units. 
+
+First, make sure the build generated `compile_commands.json` file, meaning `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS` is enabled, and stored on the source project tree. 
+
+Then, download a [run-clang-tidy.py][clang-tidy-script] file, and save it under the source project path. 
+
+See [here][detailed-clang] for more details. 
+
+[clang-tidy-script]: https://github.com/llvm-mirror/clang-tools-extra/blob/master/clang-tidy/tool/run-clang-tidy.py
+[detailed-clang]: https://www.kdab.com/clang-tidy-part-1-modernize-source-code-using-c11c14/
