@@ -159,16 +159,210 @@ Therefore, prefer using `calloc(1, size)` instead.
 
 Note that in this particular case, even `memset_s` the buffer prior to `free`ing them wouldn't prevent the heap leakage, as the second `free` call sets the first qword of `buf2` to a heap address. 
 
-## Bonus - Exploitation
+## Exploitation
 
-For stack and heap UDA, mostly stack grooming and heap feng shui. 
+For stack and heap UDA, mostly stack grooming ("stack feng shui") and heap feng shui. 
 
-## CVE-BLA
+The idea is to call functions in an order that leads to ACID being placed on the correct memory address, that will eventually be read by the function containing the UDA vuln. 
+
+Heap feng shui, as opposed to regular heap overflow, would fill the user-data of the allocated chunks with ACID, then free some of the chunks, and allocate the victim chunks (that contains uninitialized data). \
+Now those chunks containing some user-data that is ACID. 
+
+It makes heap-spraying a very good strategy, so that most addresses on the heap will containg ACID with high probability (allocate alot of chunks, fill them with ACID, and free them all). 
+
+## CVE-2022-1809 - Radare2
+
+RE tool. \
+Therefore, all values that come from the binary are actually ACID. 
 
 ### Code
 
+```c
+//////////////////////////////////////////////////////////////////////
+//XENO: Structure that isn't completely initialized
+//////////////////////////////////////////////////////////////////////
+/* vtables */
+typedef struct {
+	RAnal *anal;
+	RAnalCPPABI abi;
+	ut8 word_size;
+	bool (*read_addr) (RAnal *anal, ut64 addr, ut64 *buf);
+} RVTableContext;
+
+//////////////////////////////////////////////////////////////////////
+//XENO: Part of the path where incomplete initialized occurs
+//////////////////////////////////////////////////////////////////////
+
+//XENO: assume the following fields are ACID based on a malicious ACID binary under analysis:
+//XENO: anal->config->bits, anal->cur->arch
+
+R_API bool r_anal_vtable_begin(RAnal *anal, RVTableContext *context) {
+	context->anal = anal;
+	context->abi = anal->cxxabi;
+	context->word_size = (ut8) (anal->config->bits / 8);
+	const bool is_arm = anal->cur->arch && r_str_startswith (anal->cur->arch, "arm");
+	if (is_arm && context->word_size < 4) {
+		context->word_size = 4;
+	}
+	const bool be = anal->config->big_endian;
+	switch (context->word_size) {
+	case 1:
+		context->read_addr = be? vtable_read_addr_be8 : vtable_read_addr_le8;
+		break;
+	case 2:
+		context->read_addr = be? vtable_read_addr_be16 : vtable_read_addr_le16;
+		break;
+	case 4:
+		context->read_addr = be? vtable_read_addr_be32 : vtable_read_addr_le32;
+		break;
+	case 8:
+		context->read_addr = be? vtable_read_addr_be64 : vtable_read_addr_le64;
+		break;
+	default:
+		return false;
+	}
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+//XENO: Part of the path where uninitialized access occurs eventually
+//////////////////////////////////////////////////////////////////////
+
+
+R_API void r_anal_list_vtables(RAnal *anal, int rad) {
+	RVTableContext context;
+	r_anal_vtable_begin (anal, &context);
+
+	const char *noMethodName = "No Name found";
+	RVTableMethodInfo *curMethod;
+	RListIter *vtableIter;
+	RVTableInfo *table;
+
+	RList *vtables = r_anal_vtable_search (&context);
+//XENO: snip
+}
+
+R_API RList *r_anal_vtable_search(RVTableContext *context) {
+	RAnal *anal = context->anal;
+	if (!anal) {
+		return NULL;
+	}
+
+	RList *vtables = r_list_newf ((RListFree)r_anal_vtable_info_free);
+	if (!vtables) {
+		return NULL;
+	}
+
+	RList *sections = anal->binb.get_sections (anal->binb.bin);
+	if (!sections) {
+		r_list_free (vtables);
+		return NULL;
+	}
+
+	r_cons_break_push (NULL, NULL);
+
+	RListIter *iter;
+	RBinSection *section;
+	r_list_foreach (sections, iter, section) {
+		if (r_cons_is_breaked ()) {
+			break;
+		}
+
+		if (!vtable_section_can_contain_vtables (section)) {
+			continue;
+		}
+
+		ut64 startAddress = section->vaddr;
+		ut64 endAddress = startAddress + (section->vsize) - context->word_size;
+		ut64 ss = endAddress - startAddress;
+		if (ss > ST32_MAX) {
+			break;
+		}
+		while (startAddress <= endAddress) {
+			if (r_cons_is_breaked ()) {
+				break;
+			}
+			if (!anal->iob.is_valid_offset (anal->iob.io, startAddress, 0)) {
+				break;
+			}
+
+			if (vtable_is_addr_vtable_start (context, section, startAddress)) {
+				RVTableInfo *vtable = r_anal_vtable_parse_at (context, startAddress);
+				if (vtable) {
+					r_list_append (vtables, vtable);
+					ut64 size = r_anal_vtable_info_get_size (context, vtable);
+					if (size > 0) {
+						startAddress += size;
+						continue;
+					}
+				}
+			}
+			startAddress += context->word_size;
+		}
+	}
+//XENO: snip
+}
+
+static bool vtable_is_addr_vtable_start(RVTableContext *context, RBinSection *section, ut64 curAddress) {
+	if (context->abi == R_ANAL_CPP_ABI_MSVC) {
+		return vtable_is_addr_vtable_start_msvc (context, curAddress);
+	}
+	if (context->abi == R_ANAL_CPP_ABI_ITANIUM) {
+		return vtable_is_addr_vtable_start_itanium (context, section, curAddress);
+	}
+	r_return_val_if_reached (false);
+	return false;
+}
+
+static bool vtable_is_addr_vtable_start_msvc(RVTableContext *context, ut64 curAddress) {
+	RAnalRef *xref;
+	RListIter *xrefIter;
+
+	if (!curAddress || curAddress == UT64_MAX) {
+		return false;
+	}
+	if (curAddress && !vtable_is_value_in_text_section (context, curAddress, NULL)) {
+		return false;
+	}
+//XENO: snip
+}
+
+static bool vtable_is_value_in_text_section(RVTableContext *context, ut64 curAddress, ut64 *value) {
+	//value at the current address
+	ut64 curAddressValue;
+	if (!context->read_addr (context->anal, curAddress, &curAddressValue)) {
+		return false;
+	}
+	//if the value is in text section
+	bool ret = vtable_addr_in_text_section (context, curAddressValue);
+	if (value) {
+		*value = curAddressValue;
+	}
+	return ret;
+}
+```
+
 ### Code Review
 
+Initially, `RVTableContext context` is allocated on the stack, without any initialization. \
+Then, the initialization function `r_anal_vtable_begin` initializes *some* of the struct's members. \
+Since `word_size` is ACID, we can control the switch-case branch, so that non of the criterias are met. \
+This means that we can leave `context->read_addr` as uninitialized function pointer. 
+
+Since `r_anal_vtable_begin` returns the value of `false` in such case, but its return value isn't checked - we are completely OK, and the flow continues. 
+
+This function pointer is being used at `vtable_is_value_in_text_section`. 
+
+If we groom the stack into having an ACID `read_addr` field, we win. 
+
 ### Patch
+
+Added `RVTableContext context = {0};` (insufficient, as there are also other flows reaching the vuln).
+
+Also added `read_addr` initialization to some default value, which fixes the core bug. 
+
+## CVE-2021-3608 - QEMU Paravirtualized RDMA
+
+
 
 [eclipse]: https://www.eclipse.org/downloads/packages/release/2022-12/r/eclipse-ide-cc-developers
