@@ -1,0 +1,231 @@
+---
+layout: post
+title:  "Dockers 101"
+date:   2023-02-21 19:59:44 +0300
+categories: jekyll update
+---
+
+**Contents**
+* TOC
+{:toc}
+## General
+
+This page summerizes key docker-insights. 
+
+## Launch
+
+```bash
+docker run --name repo alpine/git clone https://github.com/docker/getting-started.git 
+docker cp repo:/git/getting-started/ .
+```
+
+The first command, `docker run` launches a new container, and names it as `repo`. \
+The container image is fetched from [docker-hub][docker-hub], and named `alpine/git`. \
+Note that containers may be also launched from docker-image tags, as created by `docker build`. 
+
+Its sole goal is to run `git` within a container. \
+The git command fetches the docker tutorial github repo. 
+
+Note that a container can be run in background, via `-d` flag. \
+Moreover, container's ports may be published towards the host, via `-p 127.0.0.1:80:8080/tcp` . \
+This binds container port `8080` to TCP port `80` on `127.0.0.1` of the host machine. \
+Note that ports must not be bound to the host, and may be accessible from outside, for example `-p 80:80`.
+
+The second command, `docker cp`, copies files and directories from the docker container towards the host. 
+
+## Build
+
+Docker image is a private file-system for a single container. \
+It provides all the files and code the container needs [docker-build][docker-build].
+
+Image can be built according to a `dockerfile`, via `docker build`: 
+
+```bash
+docker build -t docker101tutorial .
+```
+
+The above command's `PATH` is equals to `.`, and defines the subset of files the build may refer to. \
+This means ALL  files in the current directory get `tar`d and sent to the docker daemon. 
+
+Note that `.dockerignore` file may be used, for example to ignore uploading redundant files such as the `.git` directory. 
+
+Note the usage of `-t` (tag): `docker build -t repo_name:2.0`, means the image name will be `repo_name`, and its tag `2.0`. \
+A single image may have multiple tags. \
+A common pick is the `latest` tag. 
+
+## Stop
+
+We can get the ID of running containers by `docker ps`. 
+
+Then, we can stop a running container by `docker stop <container-id>`.
+
+Finally, after the container have stopped, we can remove it using `docker rm <container-id>`. \
+Note we can stop and remove a container in a single command via `docker rm -f <container-id>`. 
+
+## Exec
+
+We can execute a command on a running container via `docker exec`:
+
+```bash
+docker exec -it <container-id> sh
+```
+
+In this case, we eould execute the command `sh`, which would yield us a shell. \
+Moreover, note the usage of `-it` for an `--interactive` + `--tty` session. 
+
+## Dockerfile
+
+A script of instructions, that is used to create a container image. \
+The project's source must contain a file named `Dockerfile`. 
+
+Example of a simple dockerfile:
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY . .
+RUN yarn install --production
+CMD ["node", "./src/index.js"]
+```
+
+The builder states the build should continue from the `node:18-alpine` image, using the `FROM` keyword. \
+That way, we can have some previous good starting point, instead of building everything from scratch. 
+
+The `WORKDIR` instruction sets the working directory for any following instruction. \
+This basically sets a "root jail" within the files that would be uploaded to the docker container from the host. 
+
+The `COPY` instruction copies files from the host towards the container. \
+Thereafore, the above instruction copies all content of the `/app` directory within the host towards the container. 
+
+The `RUN` instruction allows execution of bash commands. \
+Note that this is an image build step. Usually we would install packages that are required by the application via `RUN`. 
+
+`CMD` is the command that the container executes by default, when the built image is finnaly launched. Note it can be used as multiple forms: explicit `array` (preferred format), and `shell`. \
+It can only be called once within a dockerfile. 
+
+## Docker Image Sharing
+
+Docker images are shared within the Docker Hub. 
+
+The image is pushed towards the server via:
+
+```bash
+docker push MY_USERNAME/getting-started
+```
+
+The image name must be tagged, via `docker tag` command:
+
+```bash
+docker tag getting-started MY_USERNAME/getting-started
+```
+
+Note we can see all created docker images via `docker image ls`. 
+
+## Persisting Data
+
+Container starts from the image definition each time it starts. \
+Those changes are lost when the container is removed, and all changes are isolated to this specific container. 
+
+`volumes` provide the ability to connect specific filesystem paths of the container back to the host machine. \
+We can mount a directory within the container, so that changes would be seen also on the host machine. \
+That way, upon container restarts, the directory would persist. 
+
+### Named Volumes
+
+For example, SQLite uses a single file as its DB. \
+We can persist that file on the host, and make it available to the next container. 
+
+Named volume is just "bucket of data". \
+Docker maintains the physical location on the disk, and assigns this volume a name. 
+
+Create volume named `todo-db` via:
+
+```bash
+docker volume create todo-db
+```
+
+Now, we can specify the volume mount via `-v` flag:
+
+```bash
+docker run -dp 3000:3000 -v todo-db:/etc/todos getting-started
+```
+
+That way, we've assigned the `todo-db` volume a persistant mount point on the host - `/etc/todos`. 
+
+Note that named volumes are stored within an arbitrary mount point, we do not control. \
+We can inspect it via `docker volume inspect todo-db`. 
+
+### Bind Mounts
+
+Allows us to control the mount point on the host machine. \
+We can also use it to provide additional data into the containers. 
+
+For example, we can mount our source code into the container, to let it see code changes right away. 
+
+```bash
+docker run -dp 3000:3000 \
+    -w /app -v "$(pwd):/app" \
+    node:18-alpine \
+    sh -c "yarn install && yarn run dev"
+```
+
+`-w /app` sets the container working directory. \
+`-v "$(pwd):/app"` makes a bind mount of the host's `$(pwd)` towards the container's `/app` (requires absolute paths). \
+`node:...` stands for the image to use. \
+`sh -c "..."` is the command to be executed. 
+
+## Docker Compose
+
+Tool that was developed to ease the defining and sharing of multi-container applications. 
+
+This is a single file, `docker-compose.yml`, that defines the multiple containers that run our application. 
+
+The `services` attribute defines the contains we want to run as part of our application. \
+Note it also automatically assigns the service name as a network alias. 
+
+For example:
+
+```bash
+services:
+  app:
+    image: node:18-alpine
+    command: sh -c "yarn install && yarn run dev"
+    ports:
+      - 3000:3000
+    working_dir: /app
+    volumes:
+      - ./:/app
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: secret
+      MYSQL_DB: todos
+
+  mysql:
+    image: mysql:8.0
+    volumes:
+      - todo-mysql-data:/var/lib/mysql
+    environment: 
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: todos
+
+volumes:
+  todo-mysql-data:    
+```
+
+Note the `app` volume uses a static filesystem host->container mapping, whereas the `db` volume uses a named volume. \
+The named volume needs to be stated explicitly within the compose file.
+
+The application can be runned via `docker compose up -d`, and stopped via `docker compose down`. \
+Its logs can be inspected via `docker compose logs -f`. 
+
+## Logging
+
+We can watch docker's logs via `docker logs -f <container-id>`. 
+
+Moreover, we can look at how an image is composed, via `docker image history --no-trunc <id>`.
+
+
+[docker-hub]: https://hub.docker.com/r/alpine/git
+[docker-build]: https://docs.docker.com/engine/reference/commandline/build/
+
