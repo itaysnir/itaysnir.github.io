@@ -358,6 +358,111 @@ After adding this, the module was compiled successfully.
 
 ## Exercise 4 - Sub-modules
 
+In order for multi modules compilation, I've wrote the following short Kbuild file:
+
+```bash
+ccflags-y = -Wno-unused-function -Wno-unused-label -Wno-unused-variable
+
+# TODO: add rules to create a multi object module
+obj-m = multi-mod.o
+multi-mod-y = mod1.o mod2.o
+```
+
+Now `multi-mod.ko` was created, and works properly. 
+
+Note `mod1.c` declares `static int` variables on its scope. \
+Those variables are only accessible to this module. 
+
+In case "global" variable would like to be used (for example, by other modules or by core-kernel), `EXPORT_SYMBOL(var)` should've been used on the exporting module, and `extern int var` on the importing module.
+
+## Exercise 5 - Kernel oops
+
+This module contains a null-dereference bug:
+
+```c
+static int my_oops_init(void)
+{
+    char *p = 0;
+
+    pr_info("before init\n");
+    *p = 'a';
+    pr_info("after init\n");
+
+    return 0;
+}
+```
+
+In order to generate debug information, I've added the `-g` flag within the Kbuild file:
+
+```bash
+ccflags-y = -Wno-unused-function -Wno-unused-label -Wno-unused-variable -g
+
+obj-m = oops_mod.o
+```
+
+Upon loading the module, the kernel *was not* crashed. \
+However, the following error was printed to the console:
+
+```bash
+oops_mod: loading out-of-tree module taints kernel.
+before init
+BUG: kernel NULL pointer dereference, address: 00000000
+#PF: supervisor write access in kernel mode
+#PF: error_code(0x0002) - not-present page
+*pde = 00000000
+Oops: 0002 [#1] SMP
+CPU: 0 PID: 227 Comm: insmod Tainted: G           O      5.10.14+ #1
+Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.15.0-1 04/01/2014
+EIP: my_oops_init+0xd/0x22 [oops_mod]
+Code: Unable to access opcode bytes at RIP 0xd085afe3.
+EAX: 0000000b EBX: 00000000 ECX: cfdc9d4c EDX: 01000000
+ESI: d085b000 EDI: 00000002 EBP: cb6cddb8 ESP: cb6cddb4
+DS: 007b ES: 007b FS: 00d8 GS: 00e0 SS: 0068 EFLAGS: 00000286
+CR0: 80050033 CR2: d085afe3 CR3: 0bfe2000 CR4: 00000690
+Call Trace:
+ do_one_initcall+0x57/0x2d0
+ ? rcu_read_lock_sched_held+0x41/0x70
+ ? kmem_cache_alloc_trace+0x2be/0x330
+ ? do_init_module+0x1f/0x230
+ do_init_module+0x4e/0x230
+ load_module+0x2368/0x2920
+ ? sched_clock_cpu+0x25/0x160
+ ? find_held_lock+0x29/0x90
+ __ia32_sys_init_module+0xe5/0x120
+ do_int80_syscall_32+0x2c/0x40
+ entry_INT80_32+0xf7/0xf7
+EIP: 0x44902cc2
+Code: 06 89 8a 84 01 00 00 c3 55 57 56 53 8b 6c 24 2c 8b 7c 24 28 8b 74 24 24 8b 54 24 20 8b 4c 24 1c 8b 5c 24 18 8b 44 24 14 cd0
+EAX: ffffffda EBX: 0a08d050 ECX: 000096d8 EDX: 0a08d008
+ESI: 00000000 EDI: bff8a21c EBP: 00000000 ESP: bff8a07c
+DS: 007b ES: 007b FS: 0000 GS: 0033 SS: 007b EFLAGS: 00000206
+Modules linked in: oops_mod(O+)
+CR2: 0000000000000000
+---[ end trace ccf3788f35b47ab6 ]---
+EIP: my_oops_init+0xd/0x22 [oops_mod]
+Code: Unable to access opcode bytes at RIP 0xd085afe3.
+EAX: 0000000b EBX: 00000000 ECX: cfdc9d4c EDX: 01000000
+ESI: d085b000 EDI: 00000002 EBP: cb6cddb8 ESP: cb6cddb4
+DS: 007b ES: 007b FS: 00d8 GS: 00e0 SS: 0068 EFLAGS: 00000286
+CR0: 80050033 CR2: d085afe3 CR3: 0bfe2000 CR4: 00000690
+Killed
+```
+
+According to the stack trace, the oops happened at `RIP=0xd085afe3`. 
+
+By reading `/proc/modules`, we can see the kernel module virtual load address, as well as its size:
+
+```bash
+oops_mod 20480 1 - Loading 0xd085b000 (O+)
+```
+
+We can see even more detailed information by inspecting `/sys/module/<name>/sections/`. 
+
+Note the module cannot be unloaded, as `rmmod` does not decreases the reference count of the buggy modules.
+
+## Exercise 6 - Module Params
+
+
 
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
 [dyndbg-link]: https://www.kernel.org/doc/html/v4.15/admin-guide/dynamic-debug-howto.html
