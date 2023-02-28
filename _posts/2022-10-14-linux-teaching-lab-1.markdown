@@ -462,6 +462,163 @@ Note the module cannot be unloaded, as `rmmod` does not decreases the reference 
 
 ## Exercise 6 - Module Params
 
+By inspecting `cmd_mod.c`, we can see the module defines a module parameter as follows:
+
+```c
+static char *str = "the worm";
+module_param(str, charp, 0000);
+MODULE_PARM_DESC(str, "A simple string");
+```
+
+Module parameters are supported by `<moduleparam.h>`. \
+The parameter `str` is defined as a `char ptr`, with default permissions of `0000`. \
+The permissions are relevant for the file under `/sys/module/cmd_mod/parameters/str`, in case dynamic change of its values are needed (and not only at the module's loading time). 
+
+A short description is added, which can be displayed via the `modinfo` command. 
+
+We can load the module with parameters via `insmod cmd_mod.ko str="noder"`. \
+The variable will be initialized before the init function call. 
+
+We can simply call `insmod cmd_mod.ko str="Noder"` to set the module param value, prior to the `module_init` call. 
+
+## Exercise 7 - Proc Info
+
+We want to add code to display the PID and executable name for the current process. 
+
+Recall that a process is described by `struct task_struct`. \
+The pointer to the structure of the current running process is given by the `current` variable, which is of type `struct task_struct*`. \
+It is actually a macro, for the `get_current()` function, defined within `linux/sched.h`. 
+
+I've added the following code to the kernel module:
+
+```c
+struct task_struct *p = current;
+
+pid_t pid = p->pid;
+char *name = p->comm;
+
+pr_info("PID=%d NAME=%s\n", pid, name);
+```
+
+And the following output is printed:
+
+```bash
+# insmod list_proc.ko
+PID=226 NAME=insmod
+# rmmod list_proc.ko
+PID=227 NAME=rmmod
+```
+
+## Extra 1 - KDB
+
+## Extra 2 - PS Module
+
+Updating the module created at exercise 7, to display information about all of the processes in the system. 
+
+The [following page][process-list] describes the Linux kernel implementation of the process list. \
+A circular doubly linked list links all of the existing process descriptors (`task_struct`) - the process list. \
+The `prev_task` and `next_task` fields are used to implement the list. \
+The head of the list is called `init_task`, which is the ancestor of all processes - `process 0, swapper`.
+
+Process descriptor can be inserted / removed from the list via `set_links, remove_links`. 
+
+A useful macro is called `for_each_process`, which scans the whole process list:
+
+```c
+#define for_each_process(p) \
+	for (p = &init_task ; (p = next_task(p)) != &init_task ; )
+```
+
+It is defined within `linux/sched/signal.h`, and should be explicitly included.
+
+My module contains the following snippet:
+
+```c
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+// Required for task_struct + for_each_process macro
+#include <linux/sched.h>
+#include <linux/sched/signal.h>
+
+static int my_proc_init(void)
+{
+    struct task_struct *p = current;
+
+    pid_t pid = p->pid;
+    char *name = p->comm;
+    /* TODO: print current process pid and its name */
+
+    pr_info("PID=%d NAME=%s\n", pid, name);
+
+    /* TODO: print the pid and name of all processes */
+    for_each_process(p) {
+        pid = p->pid;
+        name = p->comm;
+
+        pr_info("PID=%d NAME=%s\n", pid, name);
+    }
+
+    return 0;
+}
+```
+
+And I got the following result on the VM:
+
+```bash
+# insmod list_proc.ko
+PID=239 NAME=insmod
+PID=1 NAME=init
+PID=2 NAME=kthreadd
+PID=3 NAME=rcu_gp
+PID=4 NAME=rcu_par_gp
+PID=5 NAME=kworker/0:0
+PID=6 NAME=kworker/0:0H
+PID=7 NAME=kworker/u2:0
+PID=8 NAME=mm_percpu_wq
+PID=9 NAME=ksoftirqd/0
+PID=10 NAME=rcu_sched
+PID=11 NAME=migration/0
+PID=12 NAME=cpuhp/0
+PID=13 NAME=kdevtmpfs
+PID=14 NAME=netns
+PID=15 NAME=oom_reaper
+PID=16 NAME=writeback
+PID=38 NAME=kblockd
+PID=39 NAME=kworker/0:1
+PID=40 NAME=kworker/0:1H
+PID=41 NAME=kswapd0
+PID=42 NAME=cifsiod
+PID=43 NAME=smb3decryptd
+PID=44 NAME=cifsfileinfoput
+PID=45 NAME=cifsoplockd
+PID=47 NAME=acpi_thermal_pm
+PID=48 NAME=kworker/u2:1
+PID=50 NAME=kworker/0:2
+PID=52 NAME=khvcd
+PID=53 NAME=ipv6_addrconf
+PID=54 NAME=kmemleak
+PID=55 NAME=jbd2/vda-8
+PID=56 NAME=ext4-rsv-conver
+PID=194 NAME=udhcpc
+PID=205 NAME=syslogd
+PID=208 NAME=klogd
+PID=214 NAME=getty
+PID=215 NAME=sh
+PID=216 NAME=getty
+PID=217 NAME=getty
+PID=218 NAME=getty
+PID=219 NAME=getty
+PID=222 NAME=kworker/u2:2
+PID=223 NAME=kworker/u2:3
+PID=233 NAME=start_getty
+PID=234 NAME=start_getty
+PID=235 NAME=login
+PID=236 NAME=login
+PID=239 NAME=insmod
+```
+
+Cool - the output seems identical to the `ps` command!
 
 
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
@@ -471,3 +628,4 @@ Note the module cannot be unloaded, as `rmmod` does not decreases the reference 
 [early-params]: https://lists.kernelnewbies.org/pipermail/kernelnewbies/2011-July/002709.html
 [kernel-gdb]: https://blog.lexfo.fr/cve-2017-11176-linux-kernel-exploitation-part4.html#debugging-the-kernel-with-gdb
 [kernel-debug]: https://www.cnblogs.com/bsauce/p/11634162.html
+[process-list]: https://www.halolinux.us/kernel-reference/the-process-list.html
