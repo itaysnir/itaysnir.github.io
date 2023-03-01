@@ -620,6 +620,71 @@ PID=239 NAME=insmod
 
 Cool - the output seems identical to the `ps` command!
 
+## Extra 3 - Memory Info
+
+We want to develop a kernel module that displays the virtual memory mappings for the current process. 
+
+Recall `task_struct` describes a single task. \
+It contains two members of type `mm_struct *`: `mm, active_mm`. Note `active_mm` is relevant for kernel-threads support, and saves the `mm` of the previous running process. \
+This struct is defined within `linux/mm_types.h`. \
+It describes a whole **memory address space** of a process / thread. 
+
+Cool to know - `mm_users` serves as the minor ref count for this address space. For example, for 2 threads `mm_users` is equal to 2, and `mm_count` equals to 1. \
+Once `mm_users` reaches 0, the `mm_count` is decremented by 1 - which frees the `mm_struct` upon reaching 0. \
+The free operation is done by `free_mm` macro, which returns the struct towards the `mm_cachep` slab via `kmem_cache_free`. 
+
+Moreover, kernel threads do not have a process address space, and therefore no associated `mm_struct`. \
+However, they still need some data - such as page tables, in order to access the kernel memory. Therefore, they simply use the `mm_struct` of the previous running process, as the kernel memory mapping is shared among all of the processes. 
+
+For kernel 5.10, `mm_struct` has a linked-list pointer of structs `vm_area_struct`, called `mmap`, but it was changed on modern kernel. \
+This struct describes a single virtual memory area, by the fields `vm_start, vm_end`. \
+It also has a pointer for its associated `mm_struct`, as well as a pointer towards the next vm area, `vm_next`. \
+The `vm_flags` member describes the permissions of the memory area. 
+
+[extra-reading][vm-area].
+
+I've added the following to my module, in order to parse the `current` process memory sections:
+
+```c
+struct task_struct *p = current;
+struct mm_struct *m = p->mm;
+struct vm_area_struct *vmem = m->mmap;
+
+while (vmem != NULL)
+{
+    unsigned long start = vmem->vm_start;
+    unsigned long end = vmem->vm_end;
+    pr_info("START=0x%lx END=0x%lx\n", start, end);
+    vmem = vmem->vm_next;
+}
+```
+
+The following output is yield:
+
+```bash
+START=0x8048000 END=0x80c2000
+START=0x80c2000 END=0x80c3000
+START=0x80c3000 END=0x80c4000
+START=0x80c4000 END=0x80c6000
+START=0x91c2000 END=0x91e3000
+START=0x4480c000 END=0x4482e000
+START=0x4482e000 END=0x4482f000
+START=0x4482f000 END=0x44830000
+START=0x44832000 END=0x449a9000
+START=0x449a9000 END=0x449ab000
+START=0x449ab000 END=0x449ac000
+START=0x449ac000 END=0x449af000
+START=0x449b1000 END=0x44a09000
+START=0x44a09000 END=0x44a0a000
+START=0x44a0a000 END=0x44a0b000
+START=0xb7fd1000 END=0xb7fd3000
+START=0xb7fd3000 END=0xb7fd7000
+START=0xb7fd7000 END=0xb7fd9000
+START=0xbfb95000 END=0xbfbb6000
+```
+
+As we can see, the `insmod` user process loads at `0x8048000`. \
+Moreover, we can see the mapped kernel addresses on the userspace program. 
 
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
 [dyndbg-link]: https://www.kernel.org/doc/html/v4.15/admin-guide/dynamic-debug-howto.html
@@ -629,3 +694,4 @@ Cool - the output seems identical to the `ps` command!
 [kernel-gdb]: https://blog.lexfo.fr/cve-2017-11176-linux-kernel-exploitation-part4.html#debugging-the-kernel-with-gdb
 [kernel-debug]: https://www.cnblogs.com/bsauce/p/11634162.html
 [process-list]: https://www.halolinux.us/kernel-reference/the-process-list.html
+[vm-area]: http://books.gigatux.nl/mirror/kerneldevelopment/0672327201/ch14lev1sec2.html
