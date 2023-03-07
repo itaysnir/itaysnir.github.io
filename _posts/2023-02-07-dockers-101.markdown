@@ -225,7 +225,25 @@ We can watch docker's logs via `docker logs -f <container-id>`.
 
 Moreover, we can look at how an image is composed, via `docker image history --no-trunc <id>`.
 
+## Example - SonarCube
+
+A popular and recommended static analysis tool is SonarCube. \
+However, I really don't have the time or will to download all of its java-crap dependencies. 
+
+Instead, i can use an already-existing docker machine, containing the analysis tool already installed:
+
+```bash
+sudo docker run -it --rm -v $(pwd):/tmp sonarsource/sonar-scanner-cli bash
+```
+
+Note I've mapped the current host working directory to the docker image's `tmp` folder. 
+
+Also, run the sonarcube server in the background:
+
+```bash
+sudo docker run -d --rm --name sonarqube -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true -p 9000:9000 sonarqube:latest
+```
+
 
 [docker-hub]: https://hub.docker.com/r/alpine/git
 [docker-build]: https://docs.docker.com/engine/reference/commandline/build/
-

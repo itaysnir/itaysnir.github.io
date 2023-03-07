@@ -373,7 +373,8 @@ Now `multi-mod.ko` was created, and works properly.
 Note `mod1.c` declares `static int` variables on its scope. \
 Those variables are only accessible to this module. 
 
-In case "global" variable would like to be used (for example, by other modules or by core-kernel), `EXPORT_SYMBOL(var)` should've been used on the exporting module, and `extern int var` on the importing module.
+In case "global" variable would like to be used (for example, by other modules or by core-kernel), `EXPORT_SYMBOL(var)` should've been used on the exporting module, and `extern int var` on the importing module. \
+The following page describes the various variable scopes possibilities: [kernel-vars][kernel-vars]
 
 ## Exercise 5 - Kernel oops
 
@@ -510,6 +511,44 @@ PID=227 NAME=rmmod
 ```
 
 ## Extra 1 - KDB
+
+The file `hello_kdb.c` creates a `proc` entry via `proc_create`, and sets up its `struct proc_ops`. \
+It uses `seq_file` to define some of the handlers, such as `single_open`. \
+This scheme allows easy implementation of virtual files, as can be learned [here][seq-files] and [here][seq-files-2].
+
+```c
+static int hello_proc_show(struct seq_file *m, void *v) {
+    seq_printf(m, "Hello proc!\n");
+    return 0;
+}
+
+static int hello_proc_open(struct inode *inode, struct  file *file) {
+    return single_open(file, hello_proc_show, NULL);
+}
+
+static int edit_write(struct file *file, const char *buffer,
+        size_t count, loff_t *data)
+{
+    kdb_write_address += 1;
+    return count;
+}
+
+static const struct proc_ops edit_proc_ops = {
+    .proc_open  = hello_proc_open,
+    .proc_read  = seq_read,
+    .proc_write = edit_write,
+    .proc_lseek = seq_lseek,
+    .proc_release   = single_release,
+};
+```
+
+Note the `.proc_open` handler must be created. \
+It may wrap `seq_open`, or `single_open` and provide a single-function show handler, such as `hello_proc_show`. \
+Also note that default behavior for a seq file may be provided. 
+
+Upon opening both files, an `hello` greeting is printed. \
+Moreover, writing to the `hello_bug` proc file causes a kernel-taint, as explicit call to `panic` is being issued. 
+
 
 ## Extra 2 - PS Module
 
@@ -686,6 +725,32 @@ START=0xbfb95000 END=0xbfbb6000
 As we can see, the `insmod` user process loads at `0x8048000`. \
 Moreover, we can see the mapped kernel addresses on the userspace program. 
 
+## Extra 4 - Dyndbg
+
+Enables dynamic debugging. \
+Reduces the amount of messages displayed, leaving only those relevant for debugging. 
+
+While compiling the kernel, `CONFIG_DYNAMIC_DEBUG` should be enabled. \
+This allows configuring `pr_debug, dev_dbg, print_hex_dump_debug` per call. 
+
+Messages can be filtered using the `/sys/kernel/debug/dynamic_debug/control` file, from the `debugfs`. 
+
+Debugfs is a filesystem used as kernel&user space interface to configure differnt debug options. 
+
+This task mounts a `debugfs` file system under `/debug`. 
+
+Examples of specific debug messages enabling:
+
+```bash
+echo 'file svcsock.c line 1603 +p' > /debug/dynamic_debug/control
+echo 'func svc_tcp_accept +p' > /debug/dynamic_debug/control
+echo 'module noder +p' > /debug/dynamic_debug/control
+```
+
+Note that `p` activates the `pr_debug` call.
+
+
+
 [linux-makefiles]: https://docs.kernel.org/kbuild/makefiles.html?highlight=kbuild
 [dyndbg-link]: https://www.kernel.org/doc/html/v4.15/admin-guide/dynamic-debug-howto.html
 [debugfs]: https://www.opensourceforu.com/2010/10/debugging-linux-kernel-with-debugfs/
@@ -695,3 +760,6 @@ Moreover, we can see the mapped kernel addresses on the userspace program.
 [kernel-debug]: https://www.cnblogs.com/bsauce/p/11634162.html
 [process-list]: https://www.halolinux.us/kernel-reference/the-process-list.html
 [vm-area]: http://books.gigatux.nl/mirror/kerneldevelopment/0672327201/ch14lev1sec2.html
+[kernel-vars]: https://stackoverflow.com/questions/43895817/how-to-use-a-variable-from-another-c-file-in-linux-kernel
+[seq-files]: https://www.kernel.org/doc/html/v5.8/filesystems/seq_file.html
+[seq-files-2]: https://kernelnewbies.org/Documents/SeqFileHowTo
