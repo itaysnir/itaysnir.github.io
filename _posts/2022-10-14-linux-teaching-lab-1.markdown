@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Linux Teaching Lab 1 - Kernel Modules"
+title:  "Linux Kernel Lab 1 - Kernel Modules"
 date:   2022-10-12 19:59:43 +0300
 categories: jekyll update
 ---
