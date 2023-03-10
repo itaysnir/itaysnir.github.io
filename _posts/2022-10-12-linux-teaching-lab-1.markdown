@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Linux Kernel Lab 0 - Introduction"
+title:  "Linux Kernel Lab 1 - Introduction"
 date:   2022-10-12 19:59:43 +0300
 categories: jekyll update
 ---

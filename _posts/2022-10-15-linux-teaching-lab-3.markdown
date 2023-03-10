@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Linux Kernel Lab 2 - Kernel API"
+title:  "Linux Kernel Lab 3 - Kernel API"
 date:   2022-10-15 19:59:43 +0300
 categories: jekyll update
 ---
