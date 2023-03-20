@@ -199,6 +199,696 @@ The driver operations implementation utilizes three core structs: `struct file_o
 
 ### struct file_operations
 
+The character drivers receives **unaltered** system calls, issued by the users over device-type files. \
+Implementation of the driver means an implementation of system calls, specific to files: `open, close, read, write, mmap, lseek`. \
+
+The `file_operations` struct, under `linux/fs.h`, describes these operations:
+
+```c
+struct file_operations {
+    struct module *owner;
+    loff_t (*llseek) (struct file *, loff_t, int);
+    ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
+    ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
+    [...]
+    long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
+    [...]
+    int (*open) (struct inode *, struct file *);
+    int (*flush) (struct file *, fl_owner_t id);
+    int (*release) (struct inode *, struct file *);
+    [...]
+}
+```
+
+Note the system call signature differs from the driver's implementation (as the OS simplifies the driver implementation). \
+These routines receive as parameters two structs: `file, inode`, which identifies the device type file.
+
+### struct inode, struct file
+
+`inode` represents a file from the FS view, and uniquely identifies it. \
+It contains the size, rights, timestamps of the file. 
+
+`file` also represents a file, but "closer" to the user's point of view. \
+It conntains the file's `inode`, filename, opening attributes, position, etc. \
+All open files at a given time, have an associated `file` struct. 
+
+The inode is used to determine the major and minor of the device, and the file determines the flags with which the file was opened, as well as save and access private data. 
+
+```c
+struct file {
+	union {
+		struct llist_node	fu_llist;
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path;
+	struct inode		*f_inode;	/* cached value */
+	const struct file_operations	*f_op;
+
+	/*
+	 * Protects f_ep_links, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	enum rw_hint		f_write_hint;
+	atomic_long_t		f_count;
+	unsigned int 		f_flags;
+	fmode_t			f_mode;
+	struct mutex		f_pos_lock;
+	loff_t			f_pos;
+	struct fown_struct	f_owner;
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra;
+
+	u64			f_version;
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data;
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct list_head	f_ep_links;
+	struct list_head	f_tfile_llink;
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+	errseq_t		f_wb_err;
+	errseq_t		f_sb_err; /* for syncfs */
+} __randomize_layout
+```
+
+The `file` struct contains `f_mode`, which stands for read / write. \
+`f_flags` - which specifies the opening flags (`O_RDONLY, O_NONBLOCK`, etc). \
+`f_op` - pointer to the `struct file_operations`. \
+`private_data` - pointer that can be used to store device-specific data. The memory location should be assigned by the programmer. \
+`f_pos` - the offset within the file. \
+`f_inode` - the underlying inode. 
+
+```c
+struct inode {
+	umode_t			i_mode;
+	unsigned short		i_opflags;
+	kuid_t			i_uid;
+	kgid_t			i_gid;
+	unsigned int		i_flags;
+
+#ifdef CONFIG_FS_POSIX_ACL
+	struct posix_acl	*i_acl;
+	struct posix_acl	*i_default_acl;
+#endif
+
+	const struct inode_operations	*i_op;
+	struct super_block	*i_sb;
+	struct address_space	*i_mapping;
+
+#ifdef CONFIG_SECURITY
+	void			*i_security;
+#endif
+
+	/* Stat data, not accessed from path walking */
+	unsigned long		i_ino;
+	/*
+	 * Filesystems may only read i_nlink directly.  They shall use the
+	 * following functions for modification:
+	 *
+	 *    (set|clear|inc|drop)_nlink
+	 *    inode_(inc|dec)_link_count
+	 */
+	union {
+		const unsigned int i_nlink;
+		unsigned int __i_nlink;
+	};
+	dev_t			i_rdev;
+	loff_t			i_size;
+	struct timespec64	i_atime;
+	struct timespec64	i_mtime;
+	struct timespec64	i_ctime;
+	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
+	unsigned short          i_bytes;
+	u8			i_blkbits;
+	u8			i_write_hint;
+	blkcnt_t		i_blocks;
+
+#ifdef __NEED_I_SIZE_ORDERED
+	seqcount_t		i_size_seqcount;
+#endif
+
+	/* Misc */
+	unsigned long		i_state;
+	struct rw_semaphore	i_rwsem;
+
+	unsigned long		dirtied_when;	/* jiffies of first dirtying */
+	unsigned long		dirtied_time_when;
+
+	struct hlist_node	i_hash;
+	struct list_head	i_io_list;	/* backing dev IO list */
+#ifdef CONFIG_CGROUP_WRITEBACK
+	struct bdi_writeback	*i_wb;		/* the associated cgroup wb */
+
+	/* foreign inode detection, see wbc_detach_inode() */
+	int			i_wb_frn_winner;
+	u16			i_wb_frn_avg_time;
+	u16			i_wb_frn_history;
+#endif
+	struct list_head	i_lru;		/* inode LRU list */
+	struct list_head	i_sb_list;
+	struct list_head	i_wb_list;	/* backing dev writeback list */
+	union {
+		struct hlist_head	i_dentry;
+		struct rcu_head		i_rcu;
+	};
+	atomic64_t		i_version;
+	atomic64_t		i_sequence; /* see futex */
+	atomic_t		i_count;
+	atomic_t		i_dio_count;
+	atomic_t		i_writecount;
+#if defined(CONFIG_IMA) || defined(CONFIG_FILE_LOCKING)
+	atomic_t		i_readcount; /* struct files open RO */
+#endif
+	union {
+		const struct file_operations	*i_fop;	/* former ->i_op->default_file_ops */
+		void (*free_inode)(struct inode *);
+	};
+	struct file_lock_context	*i_flctx;
+	struct address_space	i_data;
+	struct list_head	i_devices;
+	union {
+		struct pipe_inode_info	*i_pipe;
+		struct block_device	*i_bdev;
+		struct cdev		*i_cdev;
+		char			*i_link;
+		unsigned		i_dir_seq;
+	};
+
+	__u32			i_generation;
+  ...
+
+	void			*i_private; /* fs or device private pointer */
+} __randomize_layout;
+```
+
+In addition to many other members, it contains a union of `i_cdev, i_bdev`, which are pointers to structures that defines the device. \
+These pointers can be used to infer the major and minor numbers of the device. 
+
+## Operations Implementation
+
+Usually upon implementing a driver, we would create a struct that contains the device information used in the module, such as the `struct cdev` of the device. 
+
+```c
+struct my_device_data {
+    struct cdev cdev;
+    /* my data starts here */
+    //...
+};
+
+static int my_open(struct inode *inode, struct file *file)
+{
+    struct my_device_data *my_data;
+
+    my_data = container_of(inode->i_cdev, struct my_device_data, cdev);
+
+    file->private_data = my_data;
+    //...
+}
+```
+
+Note how `file->private_data` is used to store the associated data. 
+
+## Registration, Unregistration of Character Devices
+
+The `dev_t` keeps the major and minor identifiers of the device. \
+It can be obtained via `MKDEV` macro, and being used within the (un)register functions:
+
+```c
+#include <linux/fs.h>
+
+int register_chrdev_region(dev_t first, unsigned int count, char *name);
+void unregister_chrdev_region(dev_t first, unsigned int count);
+```
+
+These functions stands for static assignment of the device identifiers. \ 
+`count` stands for the amount of the allocated devices (total number of minors). \
+Note a dynamic approach is also recommended, which can be used via `alloc_chrdev_region`. 
+
+For example, the following allocates `my_minor_count` devices, starting with `my_major, my_first_minor`:
+
+```c
+err = register_chrdev_region(MKDEV(my_major, my_first_minor), my_minor_count,
+                             "my_device_driver");
+```
+
+After assigning identifiers to the device, `cdev_init` should be called in order to initialize the device. \
+Moreover, the kernel would have to be notified via `cdev_add` (once the device is ready to receive calls):
+
+```c
+#include <linux/cdev.h>
+
+void cdev_init(struct cdev *cdev, struct file_operations *fops);
+int cdev_add(struct cdev *dev, dev_t num, unsigned int count);
+void cdev_del(struct cdev *dev);
+```
+
+Note `cdev_init, cdev_add` should be called for each device (minor):
+
+```c
+struct my_device_data {
+    struct cdev cdev;
+    /* my data starts here */
+    //...
+};
+
+struct my_device_data devs[MY_MAX_MINORS];
+
+err = register_chrdev_region(MKDEV(MY_MAJOR, 0), MY_MAX_MINORS,
+                                 "my_device_driver");
+
+    for(i = 0; i < MY_MAX_MINORS; i++) {
+        /* initialize devs[i] fields */
+        cdev_init(&devs[i].cdev, &my_fops);
+        cdev_add(&devs[i].cdev, MKDEV(MY_MAJOR, i), 1);
+    }
+```
+
+Note how `cdev_init` takes a `struct file_operations`, and allocates a `struct cdev` to be stored within `devs[i].cdev`. \
+The mapping between `struct cdev` and its `dev_t` is done via `cdev_add`. 
+
+## Process Address Space
+
+The driver often has to access userspace data. \
+Userspace pointer cannot be directly accessed, as there might not be any mapping for it within the page table. \
+Moreover, it rises some serious security issues. 
+
+Instead, userspace adata may be accessed via:
+
+```c
+#include <asm/uaccess.h>
+
+put_user(type val, type *address);
+get_user(type val, type *address);
+unsigned long copy_to_user(void __user *to, const void *from, unsigned long n);
+unsigned long copy_from_user(void *to, const void __user *from, unsigned long n);
+```
+
+The first 2 are macros. \
+`put_user` writes `val` within address `address`, `get_user` reads it into `val`. 
+
+`copy_to_user` copies `n` bytes from kernel buffer `from` into userspace buffer `to`. \
+`copy_from_user` is similar.
+
+Note the usage of `__user` to denote a userspace pointer. 
+
+## Open & Release
+
+`open` performs initialization of a device, and fills it with specific data (incase its the first `open` call).\
+`release` is similar - releases the device-specific data, and closes the device if it is the last call of `close`. 
+
+For example:
+
+```c
+static int my_open(struct inode *inode, struct file *file)
+{
+    struct my_device_data *my_data =
+             container_of(inode->i_cdev, struct my_device_data, cdev);
+
+    /* validate access to device */
+    file->private_data = my_data;
+}
+```
+
+Access control is a crucial problem for the `open` function. \
+Sometimes multiple `open` calls on the device are not allowed (until `release` is issued). \
+We may block, return `-EBUSY`, or just close the device in such case.
+
+## Read & Write
+
+These functions transfers data between the device and the user-space. 
+
+Example of `read` operation, copying a kernel buffer towards the user buffer:
+
+```c
+static int my_read(struct file *file, char __user *user_buffer,
+                   size_t size, loff_t *offset)
+{
+    struct my_device_data *my_data = (struct my_device_data *) file->private_data;
+    ssize_t len = min(my_data->size - *offset, size);
+
+    if (len <= 0)
+        return 0;
+
+    /* read data from my_data->buffer to user buffer */
+    if (copy_to_user(user_buffer, my_data->buffer + *offset, len))
+        return -EFAULT;
+
+    *offset += len;
+    return len;
+}
+```
+
+Note the driver uses some internal buffer, allocated somewhere else (for example, `open`), of fixed-length. \
+Moreover, `read` may return less than the desired `size`. 
+
+The `write` operation is similar, but uses `copy_from_user` to write from the user buffer towards the driver's internal buffer. 
+
+## ioctl
+
+The driver may implement an `ioctl` function, so physical device control commands are possible. 
+
+Its signature:
+
+```c
+static long my_ioctl (struct file *file, unsigned int cmd, unsigned long arg);
+```
+
+The `ioctl` receives a `cmd` argument from user-space, which identifies the request, and `arg` is its value. \
+In case a buffer is involved with the command, `arg` would be a pointer to it. 
+
+In order to generate `ioctl` command codes, it is recommended to use the `_IOC` macro: 
+
+```c
+#include <asm/ioctl.h>
+
+#define MY_IOCTL_IN _IOC(_IOC_WRITE, 'k', 1, sizeof(my_ioctl_data))
+
+static long my_ioctl (struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct my_device_data *my_data =
+         (struct my_device_data*) file->private_data;
+    my_ioctl_data mid;
+
+    switch(cmd) {
+    case MY_IOCTL_IN:
+        if( copy_from_user(&mid, (my_ioctl_data *) arg,
+                           sizeof(my_ioctl_data)) )
+            return -EFAULT;
+
+        /* process data and execute command */
+
+        break;
+    default:
+        return -ENOTTY;
+    }
+
+    return 0;
+}
+```
+
+## Waiting Queues
+
+Sometimes we would like a kernel thread to wait for an operation to finish, without using polling.
+
+A waiting queue supports sleep-wakeup. \
+This is a list of processes that are waitinf for a specific event. 
+
+A queue is of type `wait_queue_head_t`. \
+The following routines are useful for dealing with queues:
+
+```c
+#include <linux/wait.h>
+
+DECLARE_WAIT_QUEUE_HEAD(wq_name);
+// Initialize queue at compile time
+
+void init_waitqueue_head(wait_queue_head_t *q);
+// Initialize queue at runtime
+
+int wait_event(wait_queue_head_t q, int condition);
+// Adds current thread to the queue while the condition is false. 
+// State is TASK_UNINTERRUPTIBLE.
+// Calls the sched to schedule a new thread. Wakes up upon another thread calling wake_up
+
+int wait_event_interruptible(wait_queue_head_t q, int condition);
+// state is TASK_INTERRUPTIBLE
+
+int wait_event_timeout(wait_queue_head_t q, int condition, int timeout);
+// Same, but also have a maximum timeout for waiting
+
+int wait_event_interruptible_timeout(wait_queue_head_t q, int condition, int timeout);
+
+void wake_up(wait_queue_head_t *q);
+// Puts all threads of the queue whose state is TASK_INTERRUPTIBLE or TASK_UNINTERRUPTIBLE to TASK_RUNNING.
+// Removes them from the queue
+
+void wake_up_interruptible(wait_queue_head_t *q);
+// Wakes up only threads of TASK_INTERRUPTIBLE state
+```
+
+For example:
+
+```c
+#include <linux/sched.h>
+
+wait_queue_head_t wq;
+int flag = 0;
+
+init_waitqueue_head(&wq);
+wait_event_interruptible(wq, flag != 0);  // waiting
+
+/* Another thread */
+flag = 1 ;
+wake_up_interruptible (&wq);
+```
+
+## Exercise 0
+
+Note `generic_ro_fops` is defined within `linux/fs.h`, following an implementation at `fs/read_write.c`:
+
+```c
+extern const struct file_operations generic_ro_fops;
+
+const struct file_operations generic_ro_fops = {
+	.llseek		= generic_file_llseek,
+	.read_iter	= generic_file_read_iter,
+	.mmap		= generic_file_readonly_mmap,
+	.splice_read	= generic_file_splice_read,
+};
+```
+
+It is used within few filesystem implementations, as the handler to regular files (example from `fs/efs/inode.c`): 
+
+```c
+switch (inode->i_mode & S_IFMT) {
+		case S_IFDIR: 
+			inode->i_op = &efs_dir_inode_operations; 
+			inode->i_fop = &efs_dir_operations; 
+			break;
+		case S_IFREG:
+			inode->i_fop = &generic_ro_fops;
+			inode->i_data.a_ops = &efs_aops;
+			break;
+```
+
+Moreover, `vfs_read` is declared within `linux/fs.h` and defined within `fs/read_write.c`:
+
+```c
+ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+{
+	ssize_t ret;
+
+	if (!(file->f_mode & FMODE_READ))
+		return -EBADF;
+	if (!(file->f_mode & FMODE_CAN_READ))
+		return -EINVAL;
+	if (unlikely(!access_ok(buf, count)))
+		return -EFAULT;
+
+	ret = rw_verify_area(READ, file, pos, count);
+	if (ret)
+		return ret;
+	if (count > MAX_RW_COUNT)
+		count =  MAX_RW_COUNT;
+
+	if (file->f_op->read)
+		ret = file->f_op->read(file, buf, count, pos);
+	else if (file->f_op->read_iter)
+		ret = new_sync_read(file, buf, count, pos);
+	else
+		ret = -EINVAL;
+	if (ret > 0) {
+		fsnotify_access(file);
+		add_rchar(current, ret);
+	}
+	inc_syscr(current);
+	return ret;
+}
+```
+
+`FMODE_READ` states `file` was opened with read permissions. \
+`FMODE_CAN_READ` denotes that the `file` has an `f_op->read` handler associated with it. \
+`access_ok` verifies that the user pointer is valid. \
+It is defined within `arch/x86/include/asm/uaccess.h`:
+
+```c
+#define access_ok(addr, size)					\
+({									\
+	WARN_ON_IN_IRQ();						\
+	likely(!__range_not_ok(addr, size, TASK_SIZE_MAX));		\
+})
+```
+
+So this macro does a simple range-based verification for the pointer's integrity. \
+Note `copy_from_user` implicitly uses this check. 
+
+Moreover, `rw_verify_area` is declared within `fs/internal.h`. \
+This function calls `security_file_permissions`, which verifies the file has the desired permissions. 
+
+Afterwards, the `read` handler is called. \
+Note `f_ops->read` is issued upon `read(2)` and related syscalls, while `read_iter` is a possibly async read, with `iov_iter` as its desination (which supports several chunks of user-data, see [here][iov_iter]). We can think of it as a wrapper to `iovec`. 
+
+Finally, `fsnotify_access` is called - which notifies the notify subsystem that the file was accessed (read). \
+`add_rchar` have something to do with the IO_ACCOUNTING of the current process (number of I/O bytes this task have caused). \
+`inc_syscr` is similar, and accounts the number of syscalls this task have caused. 
+
+## Exercises 1
+
+We can generate the desired device via `mknod`:
+
+```bash
+mknod /dev/so2_cdev c 42 0
+```
+
+And indeed we can see the new generated device under `/dev` (same applies to `udev` daemon usage). \
+Note the device is not displayed under `/proc/devices`. 
+
+Next, I've implemented `so2_cdev_init`, which is the static function `module_init` calls. \
+This function registers a device region corresponding to the device's major, and allocates desired amount of minors:
+
+```c
+static int so2_cdev_init(void)
+{
+    int err;
+    int i;
+
+    pr_info("Entering init..");
+
+    err = register_chrdev_region(MKDEV(MY_MAJOR, MY_MINOR), NUM_MINORS, MODULE_NAME);
+    if (err != 0)
+    {
+        return err;
+    }
+
+    pr_info("Module:%s Major:%d Minors:%d registration succeeded",
+            MODULE_NAME,
+            MY_MAJOR,
+            NUM_MINORS);
+
+    for (i = 0; i < NUM_MINORS; i++) {
+        cdev_init(&devs[i].cdev, &so2_fops);
+        cdev_add(&devs[i].cdev, MKDEV(MY_MAJOR, i), 1);
+    }
+
+    return 0;
+}
+
+
+static void so2_cdev_exit(void)
+{
+    int i;
+
+    pr_info("Entering exit..");
+
+    for (i = 0; i < NUM_MINORS; i++) {
+        cdev_del(&devs[i].cdev);
+    }
+
+    unregister_chrdev_region(MKDEV(MY_MAJOR, MY_MINOR), NUM_MINORS);
+    pr_info("Major:%d Minors:%d unregistration succeeded",
+            MY_MAJOR,
+            NUM_MINORS);
+}
+```
+
+Note that devices initiated by kernel modules do not appear in `/dev`, but only in `/proc/devices`. \
+If this is required, we should add a call to `device_create` within the module.
+
+Upon loading and unloading the module, we can see `so2_cdev` is appended/removed to/from the `/proc_devices` list. 
+
+## Exercise 2
+
+I've created a fake device at `major==42` via `mknod`, and inserted the module. \
+Surprisingly, it worked. \
+I assume the collision occurs only if both devices are located under `/proc/devices`. 
+
+By changing `MY_MAJOR -> 4`, the following error occured:
+
+```bash
+$ insmod so2_cdev.ko
+insmod: can't insert 'so2_cdev.ko': Device or resource busy
+
+$ echo $?
+16
+```
+
+And indeed, this error code stands for `EBUSY`, as both `tty, ttyS` are already using this major number. 
+
+## Exercise 3
+
+I've implemented `open, release` of the driver, and added them towards the `struct file_operations`:
+
+```c
+static int so2_cdev_open(struct inode *inode, struct file *file)
+{
+    struct so2_device_data *data;
+
+    pr_info("Device is open!");
+
+    data = container_of(inode->i_cdev, struct so2_device_data, cdev);
+    file->private_data = data;
+
+    if (atomic_cmpxchg(&data->is_open, 0, 1))
+    {
+        return -EBUSY;
+    }
+
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule_timeout(10 * HZ);
+
+    return 0;
+}
+
+so2_cdev_release(struct inode *inode, struct file *file)
+{
+#ifndef EXTRA
+    struct so2_device_data *data;
+#endif
+
+    pr_info("Device have released!");
+
+#ifndef EXTRA
+    data = (struct so2_device_data *) file->private_data;
+    atomic_set(&data.is_open, 0);
+#endif
+    return 0;
+}
+```
+
+I've inserted the module, and runned `so2_cdev_test n` (the user program) to read from the device. \
+After scheduling of 10 seconds, the following error is displayed:
+
+```bash
+read: Invalid argument
+Device is open!  # Debug information
+```
+
+As there is no implemented read handler. 
+
+## Exercise 4
+
+I've added an `atomic_t is_open` variable, for each device of the driver. \
+This value is initialized upon the module load, and compared for every `open` operation (which may set it to `true`). \
+A `release` operation sets this variable to `false`. 
+
+Note the character device struct is retrieved from `inode->i_cdev`. \
+
+Upon attempting to open (while some other `open` request is scheduled to sleep), the following error is displayed:
+
+```bash
+open: Device or resource busy
+```
+
+## Exercise 5 - read operation
+
+In order to support `read` operation, each device would maintain a dedicated inner buffer within its private device data. 
+
 
 
 
@@ -207,3 +897,4 @@ The driver operations implementation utilizes three core structs: `struct file_o
 [ttyS3]: https://www.oreilly.com/library/view/linux-device-drivers/0596005903/ch18.html
 [ttyS4]: https://www.linux.it/~rubini/docs/serial/serial.html
 [devices]: https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
+[iov_iter]: https://lwn.net/Articles/625077/
