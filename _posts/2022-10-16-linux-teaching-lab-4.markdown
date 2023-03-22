@@ -889,6 +889,161 @@ open: Device or resource busy
 
 In order to support `read` operation, each device would maintain a dedicated inner buffer within its private device data. 
 
+I've initialized this buffer using `memset` and `memcpy`, as exported by `linux/string.h`. 
+
+Moreover, the read handler uses `copy_to_user` in order to write from the kernel buffer into the user's buffer. \
+Note this function actually returns the number of bytes NOT copied, meaning 0 denotes a success. 
+
+```c
+static ssize_t
+so2_cdev_read(struct file *file,
+        char __user *user_buffer,
+        size_t size, loff_t *offset)
+{
+    struct so2_device_data *data =
+        (struct so2_device_data *) file->private_data;
+    size_t to_read;
+
+    pr_info("Entering read. offset:%lld size:%u\n", *offset, size);
+
+    to_read = min((size_t)(sizeof(data->buffer) - *offset), size);
+    if (copy_to_user(user_buffer, data->buffer + *offset, to_read) != 0)
+    {
+        pr_info("Read failed\n");
+        return -EFAULT;
+    }
+
+    *offset += to_read;
+
+    return to_read;
+}
+```
+
+Note that by taking the `min`, an kernel OOB-read vuln is fixed. \
+The user may provide **arbitrary values** for `offset` and `size`. 
+
+In case `*offset` value would be somewhere within the kernel buffer (`0 < *offset < 4096`), and `size` would be some value greater than the leftover space (for example, the full size of the buffer) - memory beyond `data->buffer` would be copied towards userspace. \
+Note that userspace overflow is possible, but it is the user's role to supply large enough buffer. 
+
+Note there is still an integer overflow, as large enough `offset` may wrap around the result, hence produces some huge copy. \
+The kernel build system actually warns about this, and requiring an explicit cast to `size_t`. 
+
+Also note that the `read` syscall ends only upon returning a value of `0` (meaning no bytes were copied, and no error have occured). \
+Thats why in case of returning some constant, un-updated value, a `cat /dev/so2_cdev` would never halt. \
+Thats why `to_read` has to be calculated dynamically, based on the `offset` and supplied `size` paramters:
+
+```bash
+Device is open!
+Entering read. offset:0 size:4096
+hello
+Entering read. offset:4096 size:4096
+```
+
+Meaning `size` is the constant supplied request, issued by the user. \
+`offset` is updated dynamically, based on the offset within the file. 
+
+## Exercise 6 - write operation
+
+Similar to above, now using `copy_from_user`. 
+
+```c
+static ssize_t
+so2_cdev_write(struct file *file,
+        const char __user *user_buffer,
+        size_t size, loff_t *offset)
+{
+    struct so2_device_data *data =
+        (struct so2_device_data *) file->private_data;
+
+    pr_info("Entering write. offset:%lld size:%u\n", *offset, size);
+
+    if (copy_from_user(data->buffer + *offset, user_buffer, size) != 0)
+    {
+        pr_info("write failed");
+        return -EFAULT;
+    }
+
+    *offset += size;
+
+    return size;
+}
+```
+
+Upon writing a userspace buffer, its size is calculated dynamically:
+
+```bash
+$ echo "noderneder!" > /dev/so2_cdev
+Device have released!
+Device is open!
+Entering write. offset:0 size:12
+
+$ cat /dev/so2_cdev
+Device have released!
+Device is open!
+Entering read. offset:0 size:4096
+noderneder!
+Entering read. offset:4096 size:4096
+```
+
+## Exercise 7 - ioctl operation
+
+Long ago, there used to be a single "Big kernel lock" for synchronizing the kernel. \
+In case old compatability is required, `file_operations` contains `compat_ioctl` member. \
+
+The member `unlocked_ioctl` would be used for modern kernels tho.
+
+Note the ioctl codes are defined as following, via `_IOC`:
+
+```c
+#include <asm/ioctl.h>
+
+#define BUFFER_SIZE     256
+
+#define MY_IOCTL_PRINT      _IOC(_IOC_NONE,  'k', 1, 0)
+#define MY_IOCTL_SET_BUFFER _IOC(_IOC_WRITE, 'k', 2, BUFFER_SIZE)
+#define MY_IOCTL_GET_BUFFER _IOC(_IOC_READ,  'k', 3, BUFFER_SIZE)
+#define MY_IOCTL_DOWN       _IOC(_IOC_NONE,  'k', 4, 0)
+#define MY_IOCTL_UP     _IOC(_IOC_NONE,  'k', 5, 0)
+```
+
+I've added few simple switch-cases for the `ioctl` handler commands:
+
+```c
+static long
+so2_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct so2_device_data *data =
+        (struct so2_device_data *) file->private_data;
+    int ret = 0;
+    int remains;
+
+    switch (cmd) {
+        case MY_IOCTL_PRINT:
+            pr_info("%s\n", IOCTL_MESSAGE);
+            break;
+        case MY_IOCTL_SET_BUFFER:
+            if (copy_from_user(data->buffer, (const void __user *)arg, BUFFER_SIZE) != 0)
+            {
+                pr_info("ioctl: SET_BUFFER failed\n");
+                return -EFAULT;
+            }
+            break;
+
+        case MY_IOCTL_GET_BUFFER:
+            if (copy_to_user((void __user *)arg, data->buffer, BUFFER_SIZE) != 0)
+            {
+                pr_info("ioctl: GET_BUFFER failed\n");
+                return -EFAULT;
+            }
+            break;
+    default:
+        ret = -EINVAL;
+    }
+
+    return ret;
+}
+```
+
 
 
 
