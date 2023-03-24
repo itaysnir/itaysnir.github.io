@@ -39,14 +39,15 @@ debug=1
 Note that in case of an `.so` compiled with ASAN, but needs to run on an unsanitized executable, we can use `AddressSanitizerAsDso`, which is ASAN as a shared library. \
 See [link][asan-so] for more details. 
 
-For generic information about ASAN, see [link][asan] for details.
+For generic information about ASAN, see [here][asan] and [here][asan-blog] for details.
 
 ## PSAN
 
 Pointer sanitizer, enabled via `-fsanitize=pointer-compare` and `-fsanitize=pointer-subtract`. \
 Can be used with ASAN, but not with TSAN. 
 
-`ASAN_OPTIONS` environment variable should contain the value `detect_invalid_pointer_pairs=2`. 
+Moreover, add the following key to `ASAN_OPTIONS`:
+`detect_invalid_pointer_pairs=2`. 
 
 ## TSAN
 
@@ -91,5 +92,6 @@ Extra checks that may find stack / vtable corruptions:
 
 
 [asan]: https://github.com/google/sanitizers/wiki/AddressSanitizer
+[asan-blog]: http://gavinchou.github.io/experience/summary/syntax/gcc-address-sanitizer/
 [asan-so]: https://github.com/google/sanitizers/wiki/AddressSanitizerAsDso
 [ubsan]: https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html
