@@ -1036,6 +1036,14 @@ so2_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                 return -EFAULT;
             }
             break;
+
+        case MY_IOCTL_DOWN:
+            wait_event_interruptible(data->wait_queue, data->flag);
+            break;
+
+        case MY_IOCTL_UP:
+            wake_up_interruptible(&data->wait_queue);
+            break;
     default:
         ret = -EINVAL;
     }
@@ -1044,7 +1052,8 @@ so2_cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 }
 ```
 
-
+Note that the `GET/SET BUFFER` ioctls uses `arg` as a userspace buffer, that must be handled via the `copy_to/from_user` functions. \
+In order to support waiting queues, I've added a synchronization member for each device struct, `flag`, as well as `wait_queue_head_t wait_queue` - which stores the waiting processes. 
 
 
 [ttyS]: https://tldp.org/HOWTO/Serial-HOWTO-10.html
