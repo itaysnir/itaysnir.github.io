@@ -10,4 +10,108 @@ categories: jekyll update
 {:toc}
 ## General
 
-Linux Perf 
+Linux Perf is a very strong profiling tool, in addition to BCC tools and flamegraphs. 
+
+For my uses (mostly system's performance research), it is very useful in order to understand what exactly a process is doing - eg, where it actually spends most of its CPU cycles. 
+
+A detailed Perf tutorial may be found [here][tutorial] and [here][tutorial2]. \
+Note there is also a cool CVE that led to local privesc back in 2013, via Perf: [CVE-2013-2094][cve-link], and [here][lwn-cve].
+
+## Installation
+
+Usually `sudo apt install linux-tools-$(uname -r) linux-tools-generic` would be enough. \
+However, in case we would like to work on very recent kernel versions (for example, 6.2 as of writing this article), that aren't yet supported by Ubuntu, we can also install it from the kernel sources. 
+
+Simply navigate to `<KSOURCE>/tools/perf` and issue `make`. \
+Note the installation requires many other developer tools to be installed, make sure all of them are updated properly via `apt update && apt upgrade`. 
+
+## Common Usages
+
+Display supported measurable events:
+
+```bash
+sudo perf list
+```
+
+View the CPU profile (cycles %) in real-time, including kernel symbols:
+
+```bash
+sudo perf top
+```
+
+It can monitor all system's CPUs, or only specific CPUs via `-C`. 
+
+Gather performance statistics, for all CPUs, for the entire system:
+
+```bash
+sudo perf stat -a
+```
+
+Gather performance stats for specific command:
+```bash
+sudo perf stat <command>
+```
+
+It also supports specific process via `-p`. 
+
+Measure specific interesting events:
+
+```bash
+sudo perf stat -e cycles,'syscalls:sys_enter_*' -a sleep 5
+```
+
+Record CPU cycles:
+
+```bash
+sudo perf record -e cycles sleep 5
+```
+
+Repord the recorded `perf.data`:
+
+```bash
+sudo perf report -n --stdio  # view its results.
+sudo perf report -k /tmp/vmlinux --kallsyms=<file>  # In case we own the kernel image with debug symbols
+sudo perf report --no-children  # Displays the CPU utilization as non-inclusive
+```
+
+Record CPU utilization & stack traces:
+
+```bash
+sudo perf record --call-graph dwarf -g <command>
+```
+
+In case dwarf symbols aren't represent, we may use the default fp-tracing mechanism. \
+However, notice it requires compilation via `-fno-omit-frame-pointer`. \
+This also holds for the kernel itself - so make sure `CONFIG_FRAME_POINTER=y` within the kernel's `.config`. 
+
+Also notice we may omit the call graphs to a format that is supported by FlameGraph, which may help visualize call-stacks. 
+
+Dynamic tracing via probes:
+
+```bash
+sudo perf probe --add tcp_sendmsg
+sudo perf probe -x /lib64/libc.so.6 malloc 
+```
+
+## Flamegraphs Integration
+
+Clone the FlameGraph project:
+
+```bash
+git clone https://github.com/brendangregg/FlameGraph
+```
+
+We are particulary interested within `stackcollapse-perf.pl`. 
+
+After performing an `perf record -g` analysis, issue the following:
+
+```bash
+perf script | ./stackcollapse-perf.pl > out.perf-folded
+./flamegraph.pl out.perf-folded > perf.svg
+```
+
+
+[tutorial]: https://perf.wiki.kernel.org/index.php/Tutorial
+[tutorial2]: https://www.brendangregg.com/perf.html
+[cve-link]: https://rdomanski.github.io/Kernel-IDT-priviledge-escalation/
+[lwn-cve]: https://lwn.net/Articles/550901/
