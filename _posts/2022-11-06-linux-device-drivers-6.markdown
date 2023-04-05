@@ -56,4 +56,3 @@ It is a good practice to match between `wait_event_*` and `wake_up_*`.
 ## Blocking, Non Blocking Operations
 
 
-

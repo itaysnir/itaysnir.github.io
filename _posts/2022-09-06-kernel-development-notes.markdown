@@ -10,10 +10,10 @@ categories: jekyll update
 {:toc}
 ## IDE
 
+Vim + cscope
 
-Vim + cscope.
+My `.vimrc` cscope config:
 
-My .vimrc cscope config:
 ```bash
 if has("cscope")
         " Look for a 'cscope.out' file starting from the current directory,
@@ -66,8 +66,7 @@ if has("cscope")
 endif
 ```
 
-
-## Clone The Kernel Git Repository
+## Clone Kernel Git Repository
 
 ```bash
 git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
@@ -79,7 +78,7 @@ To update the repo, issue `git pull`.
 
 ## Create .config file
 
-Personally, i highly recommend using `make olddefconfig`. 
+`make olddefconfig` out of the existing system's config file is usually the best option. 
 
 Another option is using `make menuconfig`. \
 This method is manual, and by default includes way too many useless drivers, as well as significally increases compilation time. 
@@ -101,7 +100,7 @@ target$ scp /tmp/mylsmod host:/tmp
 host$ make LSMOD=/tmp/mylsmod localmodconfig
 ```
 
-(yes, i know many images dont contain scp by default. We will handle this soon by integrating scp to our disk image, dont worry).
+(many images dont contain scp by default. We will handle this soon by integrating scp to our disk image).
 
 Another alternative, is using:
 
@@ -119,7 +118,6 @@ To avoid any pem certificate compilation errors, disable the following config at
 <KDIR>/scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
 ```
 
-
 ## Compile
 
 Since we're gonna create our custom kernel and tweak it, I highly suggest giving an indicative name for it.
@@ -134,16 +132,17 @@ EXTRAVERSION = maio
 NAME = Kleptomaniac Octopus
 ```
 
-
-I suggest having at least 4 cores on your compilation machine (simply issue `ncpus` to check the cores count). 
+I suggest having at least 4 cores on the compilation machine (simply issue `ncpus` to check the cores count). 
 
 To reduce compilation time, compile the kernel only for your desired arch (assuming x86), with `ncpus` + 1 threads:
+
 ```bash
 # within <KDIR>:
 make ARCH=x86 -j $(( $(ncpus) + 1 ))
 ```
 
 Hooray! our lovely kernel now resides at the boot directory: 
+
 ```bash
 <KDIR>/arch/x86/boot/bzImage
 ```
@@ -155,23 +154,75 @@ It contains many debug symbols, and might be very useful for debugging.
 
 
 Afterwards, compile the selected kernel modules:
+
 ```bash
 make modules_install
 ```
+
 This will add the compiled modules towards `/lib/modules/<KVER>`. 
 Note that in case `KVER` already exists, the existing modules will be overriden. 
 
 Lastly, issue the following command to create an initrd.img, and to set the grub bootloader configuration: 
+
 ```bash
 make install
 ```
+
 Note: it does NOT set the newly created kernel as the default boot OS, only adds it as an another boot option.
 
 
 ## Building file system image
 
+### Real HW
+
+The following code snippet compiles and sets my project's adjusted kernel:
+```bash
+#!/bin/bash
+
+set -exuo pipefail
+
+
+# Configure these, if needed
+KDIR="/homes/itaysnir/projects/maio/maio_rfc"
+ARCH="x86"
+
+
+sudo -i
+cd ${KDIR}
+
+make olddefconfig
+make modules -j $(( $(ncpus) + 1 ))
+make ARCH=${ARCH} -j $(( $(ncpus) + 1 ))
+sudo make modules_install
+sudo make install
+```
+
+Note: `make modules_install` creates the required modules under `/lib/modules/<KVER>`.
+
+`make install` creates an initrd image under the `/boot` directory, and saves the generated `.config` file and `System.map` file under `/boot`.
+
+Finally, it updates the `grub` configuration (However - it doesn't set our new kernel as the default boot option). 
+
+
+Grub configuration update & set booting kernel (only for the next time):
+```bash
+sudo update-grub
+sudo grub-reboot <VERSION_NAME> && reboot
+```
+
+Print grub menu entries for all compiled kernels:
+```bash
+grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "$1, $2, $3, $4, $5, $6, $7}'
+```
+
+Note that these steps would assign another boot option to the grub menu. \
+In case we would like to make certain choice as the default one, we would have to edit `/etc/default/grub`, and set the `GRUB_DEFAULT` attribute to the name of the menuentry (note it might have special syntax). \
+After the change is made, issue `sudo update-grub` to apply the changes into `/boot/grub/grub.cfg`. \
+See [this][grub-link] for extra information. 
+
 
 ### QEMU
+
 One option is to use Yocto images. You can easily find pre-compiled images at: [yocto images][yocto-images] (choose .ext4 image).
 
 However, i find working with debian images abit easier, as it is very easy to deploy packages (such as toolchains) into them. 
@@ -274,62 +325,7 @@ qemu-system-"$ARCH" \
 
 ```
 
-
-### Real HW
-
-The following code snippet compiles and sets my project's adjusted kernel:
-```bash
-#!/bin/bash
-
-set -exuo pipefail
-
-
-# Configure these, if needed
-KDIR="/homes/itaysnir/projects/maio/maio_rfc"
-ARCH="x86"
-
-
-sudo -i
-cd ${KDIR}
-
-make olddefconfig
-make modules -j $(( $(ncpus) + 1 ))
-make ARCH=${ARCH} -j $(( $(ncpus) + 1 ))
-sudo make modules_install
-sudo make install
-```
-
-Note: `make modules_install` creates the required modules under `/lib/modules/<KVER>`.
-
-`make install` creates an initrd image under the `/boot` directory, and saves the generated `.config` file and `System.map` file under `/boot`.
-
-Finally, it updates the `grub` configuration (However - it doesn't set our new kernel as the default boot option). 
-
-
-Grub configuration update & set booting kernel (only for the next time):
-```bash
-sudo update-grub
-sudo grub-reboot <VERSION_NAME> && reboot
-```
-
-Print grub menu entries for all compiled kernels:
-```bash
-grub-mkconfig | grep -iE "menuentry 'Ubuntu, with Linux" | awk '{print i++ " : "$1, $2, $3, $4, $5, $6, $7}'
-```
-
-
-## Practice
-
-I highly suggest the linux-kernel official labs for training:
-[linux teaching labs][linux-teaching-labs].
-
-These labs are aimed towards students who are familar with basics of operating systems. 
-If you have completed a basic OS course from university, or have familar knowledge about OS, this resource is for you. 
-
-When I will have some spare time, i will post detailed solutions to these labs.
-
-Cya later!
-
 [great-post]: https://blog.nelhage.com/2013/12/lightweight-linux-kernel-development-with-kvm/
 [linux-teaching-labs]: https://linux-kernel-labs.github.io/refs/heads/master/labs/introduction.html
 [yocto-images]: https://downloads.yoctoproject.org/releases/yocto/yocto-2.3/machines/qemu/qemux86-64/
+[grub-link]: https://askubuntu.com/questions/216398/set-older-kernel-as-default-grub-entry
