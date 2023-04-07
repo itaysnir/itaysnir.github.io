@@ -190,7 +190,7 @@ For further reading aboit IRQ affinity, see [this][irq-affinity]
 ## NUMA Nodes (Cores) - PCIe
 
 For NUMA system, there is an importance of the chosen affinity core. \
-We would like to perform all of our benchmark tests under the same core, the one on which the NIC operation resides. 
+In order to achieve maximal results, we would like to perform all of our benchmark tests on the same core along with the NIC. 
 
 ### lspci
 
@@ -198,7 +198,7 @@ By using `lspci`, we can see the relevant information:
 
 ```bash
 $ lspci -v 
-
+...
 04:00.0 Ethernet controller: Mellanox Technologies MT27800 Family [ConnectX-5]
         Subsystem: Mellanox Technologies MT27800 Family [ConnectX-5]
         Flags: bus master, fast devsel, latency 0, IRQ 88, NUMA node 0
@@ -208,18 +208,20 @@ $ lspci -v
         Kernel modules: mlx5_core
 ```
 
-Note the BDF format: bus:device.function (do not confuse with `vendor:device` format). \
-Sometimes it is also useful to display the output in tree format, `lspci -t`. \
+Note the BDF format: `bus:device.function` (do not confuse with `vendor:device` format). \
+Sometimes it is also useful to inspect the bus-layout, as can be found via `lspci -t`. 
 
-From the above sample, we can learn the mellanox NICs are connected to `NUMA node 0`! \
-We will use this core affinity, in order to get best measurement results. 
+From the above sample, we can see the Mellanox NIC is connected to `NUMA node 0`! \
+We will use set the affinity to this particular core, in order to get best measurement results. 
 
-Even more - notice how `lspci` prints the PCI (bus-physical / IOVA, you name it) memory address of the NIC, which is pretty cool. \
-This means `0x3bffa000000` is the physical address of the MMIO space of the first NIC. \
-This address is generated during the PCI-tree scan at boot time - as the kernel reads the required device's memory size via its BAR register (within the PCIe configuration space), and allocates sufficient region for each device.
+Last but not least - notice how `lspci` prints the PCI (bus-physical) memory address of the NIC. \
+This means `0x3bffa000000` stands for the physical address of the MMIO space of the NIC. \
+This address is generated during the PCI-tree scan during boot time - as the kernel reads the required device's memory size via its BAR register (within the PCIe configuration space), and allocates sufficient region for each device.
 
-Note the non-trivial fact that we've got an MMIO physical address without having any special priviledges. \
-In case we would execute `sudo lspci -v`, the NIC's capabilities section would also be printed:
+Note the non-trivial fact that we've got an MMIO physical address without having any special priviledges. 
+
+In case we would execute `sudo lspci -v`, the NIC's capabilities section would also be printed: \
+(For extremely verbose output, consider `sudo lspci -vvv`)
 
 ```bash
 $ sudo lspci -v 
@@ -235,16 +237,14 @@ Capabilities: [150] Alternative Routing-ID Interpretation (ARI)
 Capabilities: [1c0] Secondary PCI Express
 ```
 
-For extremely verbose output, consider `sudo lspci -vvv`. 
-
 The offsets `[60], [48], etc` are offsets in the PCIe config space of the device, not MMIO space. \
 Also note `lspci` actually parses this information from `/proc/bus/pci/devices`, which contains some additional information. 
 
 ### Sysfs
 
-In my setup, im interested to know the associated node of the `eth4` interface. 
+In my setup, im interested to know the associated node of the `eth4` interface (the interface that is associated with the Mellanox-NIC).
 
-By navigating to `/sys/class/net/eth4/device`, we can read the value of `numa_node`, which would yield `0`! \
+By navigating to `/sys/class/net/eth4/device`, we can read the value of `numa_node`, which would yield `0`, as expected. \
 Once again, this means we have to run our benchmarks on core number 0.
 
 
