@@ -144,7 +144,7 @@ PDEBUG("\"%s\" did read %li bytes\n",current->comm, (long)count);
 return count;
 ```
 
-### Advanced Linux Sleeping
+### Advanced Sleeping
 
 According to `linux/wait.h`, the struct behind `wait_queue_head_t` is actually simple:
 
@@ -200,5 +200,23 @@ Note how rescheduling occurs only after the condition check is performed. \
 Moreover, check of the condition is performed only after the process state is changed, via `prepare_to_wait_event` (which internally calls `set_current_state`). 
 
 Finally, `finish_wait` does the cleanup - it is called after the condition is finally met, and sets the process state back to `TASK_RUNNING`, and removes the process from the waiting queue. 
+
+Note Linux supports exclusive waits - only waking up a single process that waits within the waiting queue. \
+This may really improve contention problems.
+
+When wqe has `WQ_FLAG_EXCLUSIVE` (each wqe has a `flags` member), it is added to the **end** of the waiting queue. Regular processes are added to the beginning. \
+Moreover, `wake_up` stops after waking the first exclusive process. 
+
+### Advanced Waking-Up
+
+The actual behavior that results when a process is awakened is actually controlled by an handler, `wait_queue_func_t func`, within the wqe. 
+
+The default handler, `autoremove_wake_function`, sets the process into a runnable state, and might perform context switch to that process. 
+
+Usually we won't need to modify this member within the driver, unless we would like to exploit it :)
+
+
+## Async Notification
+
 
 
