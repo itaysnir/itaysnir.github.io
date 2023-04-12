@@ -70,7 +70,8 @@ The following new files are added:
 
 1. `linux/maio.h` - contains the kernel API for maio. \
 Its source is under `lib/maio.c`. \
-Notice that currently maio should support multiple network device, as `maio_post_rx_page` also receives a `struct netdevice *net` argument. 
+Notice that currently maio should support multiple network device, as `maio_post_rx_page` also receives a `struct netdevice *net` argument. \
+It also supports [napi][napi-wiki], via `maio_napi`. 
 
 2. `linux/magazine.h` - dedicated magazine page allocator. \
 Its source is under `lib/magazine.c`. 
@@ -108,7 +109,12 @@ The following changes are made for easier debugging:
 
 2. `drivers/net/ethernet/mellanox/mlx5/core/en_main.c` - The method `mlx5e_init_frags_partition` prints the fragmented packet details. 
 
+## Notes
 
+Currently theres no support for multiple sends, due to added `set_page_state` for single-page call under `lib/maio.c`. 
+
+Also verify the `maio_*_free` methods are implemented correctly, and not as nops. 
 
 
 [github]: https://github.com/itaysnir/maio_rfc
+[napi-wiki]: https://en.wikipedia.org/wiki/New_API
