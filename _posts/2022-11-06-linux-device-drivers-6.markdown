@@ -215,8 +215,109 @@ The default handler, `autoremove_wake_function`, sets the process into a runnabl
 
 Usually we won't need to modify this member within the driver, unless we would like to exploit it :)
 
+## poll & select Implementation
 
-## Async Notification
+Whenever user application calls `poll, select, epoll_ctl`, the kernel invokes the associated `poll` method handler of the underlying file operations. \
+It uses an internal struct, `poll_table`, which is a linked list of memory pages containing `struct poll_table_entry`s. \
+Each `poll_table_entry` holds the `struct file, wait_queue_head_t, wait_queue_t` which would be passed to `poll_wait`. 
 
+If no driver indicates that I/O may be performed without blocking, the `poll` call simply sleeps until at least one waiting queue wakes up. 
+
+After any driver being polled indicates that I/O is possible, the `poll_table` argument is set to `NULL`. This also true in case the user application calls `poll` with `timeout==0`. 
+
+After `poll` call completes, the `poll_table` is deallocated, and all previous queue entries are removed from the table. 
+
+In case of an application that involves dealing with thousands of fds, setting up and tearing down this struct between every I/O operation is expesive. \
+`epoll` set up the internal struct once, and uses it many times.
+
+For more information about this, see `linux/poll.h`, and `fs/select.c`. 
+
+## Async Notification - Userland
+
+Can be very useful in some scenarios. \
+For example, process executing a loop, waiting for data from some peripheral device. \
+With async notification, the application may receive a signal whenever data becomes available - and does not need to use any polling. 
+
+To do so, user process has to specify itself as the owner of the underlying file. \
+This can be done via `fcntl(F_SETOWN)`, which stores the `current` pid within `filp->f_owner`. \ 
+That way, the kernel knows who to notify. \
+Then, the process have to call `fcntl(F_SETFL, FASYNC)` to enable async notification. \
+Whenever new data arrives, the file can request delivery of dedicated signal, `SIGIO`, which would be sent to the owner process. 
+
+```c
+signal(SIGIO, &input_handler); /* dummy sample; sigaction( ) is better */
+fcntl(STDIN_FILENO, F_SETOWN, getpid( ));
+oflags = fcntl(STDIN_FILENO, F_GETFL);
+fcntl(STDIN_FILENO, F_SETFL, oflags | FASYNC);
+```
+
+Usually async capability is available only for sockets and ttys. 
+
+## Async Notification - Kerneland
+
+From the kernel's point of view, the following main stages occur:
+
+1. `F_SETOWN` sets `filp->owner = pid`. 
+
+2. `F_SETFL` with `FASYNC` issues the driver's `fasync` file operations handler. \
+It notifies the driver of the change. 
+
+3. When data arrives, all processes registered for async notification are sent a `SIGIO`. 
+
+Note how the latter 2 steps requres maintaining a data structure to keep track of different async readers. \
+Note that the kernel already offers such general purpose implementations, via `linux/fs.h` and `fasync_struct`. \
+The driver should call `fasync_helper` - which adds or removes entries from the list of interested processes, and `kill_fasync` - which signals the interested processes when data arrives. 
+
+For example:
+
+```c
+static int scull_p_fasync(int fd, struct file *filp, int mode)
+{
+ struct scull_pipe *dev = filp->private_data;
+ return fasync_helper(fd, filp, mode, &dev->async_queue);
+}
+...
+/* Within write-handler, whenever data is available - notify */
+if (dev->async_queue)
+ kill_fasync(&dev->async_queue, SIGIO, POLL_IN);
+...
+/* Within release-handler, remove this filp from the list of async notified filp's */
+scull_p_fasync(-1, filp, 0);
+```
+
+Note the similarity between async notification and waiting queues. \
+The only difference is notifying `struct file` (which is then used to retrieve `f_owner`), instead of `task_struct`s. 
+
+## Access Control
+
+Sometimes only one authorized user should be allowed to open the device at a time. \
+Sometimes we would like more sophisticated schemes. 
+
+Notice that usually we won't use the brute-force way, e.g. to permit a device to be opened by only one process at a time. 
+
+Another option is restricting access to a single user at a time, which can open multiple processes. \
+This can be accomplished easily by adding more checks during `open`, preceding the regular open checks. \
+It requires an open counter, as well as the `uid` of the device owner - which would be placed via the device driver dedicated struct.
+
+```c
+struct scull_dev *dev = &scull_u_device; /* device information */
+
+spin_lock(&scull_u_lock);
+if (scull_u_count && 
+    (scull_u_owner != current_uid().val) &&  /* allow user */
+    (scull_u_owner != current_euid().val) && /* allow whoever did su */
+	!capable(CAP_DAC_OVERRIDE)) { /* still allow root */
+	    spin_unlock(&scull_u_lock);
+	    return -EBUSY;   /* -EPERM would confuse the user */
+    }
+
+if (scull_u_count == 0)
+	scull_u_owner = current_uid().val; /* grab it */
+
+scull_u_count++;
+spin_unlock(&scull_u_lock);
+```
+
+Note the usage of a dedicated spinlock. 
 
 
