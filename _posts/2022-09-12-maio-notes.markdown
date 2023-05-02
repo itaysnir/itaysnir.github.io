@@ -109,6 +109,42 @@ The following changes are made for easier debugging:
 
 2. `drivers/net/ethernet/mellanox/mlx5/core/en_main.c` - The method `mlx5e_init_frags_partition` prints the fragmented packet details. 
 
+## API
+
+### init_hp_memory
+
+Exported by `user_maio.h`, implemented by `maio_lib.c`. \
+Returns a memory pool (cache) of dedicated huge pages. 
+
+Each cache is associated with a `page_cache`, having an associated `fd`:
+
+```c
+struct page_cache {
+	struct single_list *page_list;		//4k Pages
+	struct single_list *comp_page_list;	//any other size
+	uint32_t chunk_sz;			//the size in pages of chunks in comp_list
+	uint32_t chunk_log;			//log of
+	int fd;					//fd of the hp file desctiptor
+};
+```
+
+The huge pages are represented by `/mnt/huge/hugepagefile` pseudo file, where `/mnt/huge` is a mount point for a hugetlbfs (can be only opened with root priviledges).
+
+Maio also contains a dedicated proc file, under `/proc/maio/map`. This file is used as a communication between the userspace component to maio's kernel component. \
+By writing to this file, maio is awared of the allocated cache pool address and its size. 
+
+Within `maio.c`, this is implemented as the `maio_map_ops` file operations struct, and its relevant `.write` handler is `maio_map_write`, which is a wrapper to `maio_map_page`. \
+This method parses the sent `base, len` values of the mmapped huge pages chunk, and allocates `umem_region_mtt`, along with an array of empty `struct page` ptrs. \
+This `mtt` (maio translation table) is added via `add_mtt`, which stores a the `mtt` within a red-black tree of mtts. It also saves a static variable named `cached_mtt` holding the last-used mtt. 
+
+
+
+
+
+
+
+
+
 ## Notes
 
 Currently theres no support for multiple sends, due to added `set_page_state` for single-page call under `lib/maio.c`. 
