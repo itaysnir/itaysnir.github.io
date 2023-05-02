@@ -135,7 +135,7 @@ By writing to this file, maio is awared of the allocated cache pool address and 
 
 Within `maio.c`, this is implemented as the `maio_map_ops` file operations struct, and its relevant `.write` handler is `maio_map_write`, which is a wrapper to `maio_map_page`. \
 This method parses the sent `base, len` values of the mmapped huge pages chunk, and allocates `umem_region_mtt`, along with an array of empty `struct page` ptrs. \
-This `mtt` (maio translation table) is added via `add_mtt`, which stores a the `mtt` within a red-black tree of mtts. It also saves a static variable named `cached_mtt` holding the last-used mtt. 
+This `mtt` (maio translation table) is added via `add_mtt`, which stores a the `mtt` within a red-black tree of mtts. It also saves a static variable named `cached_mtt` holding the recently-used mtt. 
 
 
 

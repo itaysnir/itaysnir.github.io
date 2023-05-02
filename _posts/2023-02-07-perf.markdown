@@ -86,6 +86,8 @@ This also holds for the kernel itself - so make sure `CONFIG_FRAME_POINTER=y` wi
 
 Also notice we may omit the call graphs to a format that is supported by FlameGraph, which may help visualize call-stacks. 
 
+It is also very useful to track a particular process (`-p <pid>`), thread (`-t <tid>`), or CPU (`-C <core>`).
+
 Dynamic tracing via probes:
 
 ```bash
