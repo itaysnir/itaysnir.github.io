@@ -49,24 +49,23 @@ This is a better alternative than the regular "find all references", and allows 
 
 ## CVE-2021-3434 - Zephyr RTOS
 
-Im given a hint, that the attack surface is involved with Bluetooth's L2CAP packets. 
-L2CAP is part of the Bluetooth stack, and serves as a "logical link control and adaptation" layer. 
-It offers segmentation and reassembly for large packets, hence allows them to be transmited across BT links. 
-It may receive packets of up to 64 kB, and breaks them to smaller MTU frames. The receiving end then reassembles these frames. 
+Im given a hint, that the attack surface is involved with Bluetooth's L2CAP packets. \
+L2CAP is part of the Bluetooth stack, and serves as a "logical link control and adaptation" layer. \
+It offers segmentation and reassembly for large packets, hence allows them to be transmited across BT links. \
+It may receive packets of up to 64 kB, and breaks them to smaller MTU frames. The receiving end then reassembles these frames. \
 The L2CAP layer negotiates about the optimal MTU negotiation with the other end. 
 
-L2CAP frame format is very simple - length field (2 bytes) describing the packet data coming from the upper layers, channel ID (2 bytes), serves as an identifier for the virtual channel, and finally the underlying packet data (up to 64 kB). 
+L2CAP frame format is very simple - length field (2 bytes) describing the packet data coming from the upper layers, channel ID (2 bytes), serves as an identifier for the virtual channel, and finally the underlying packet data (up to 64 kB).  
 
-The frames as passed to the Host Controller Interface (HCI), sends them to the link manager (LM), which finally sends them to the link controller (transmits the frames within radio signals). 
-Note that because this is a link-control protocol (ensuring packets are properly organized and routed to their destination), it is not suitable for audio transmission.
+The frames as passed to the Host Controller Interface (HCI), sends them to the link manager (LM), which finally sends them to the link controller (transmits the frames within radio signals). \
+Note that because this is a link-control protocol (ensuring packets are properly organized and routed to their destination), it is not suitable for audio transmission. 
 
-
-I've defined `CONFIG_BT_L2CAP_DYNAMIC_CHANNEL, CONFIG_BT_L2CAP_ECRED`, and searched for their occurences.
-I've found an interesting file: `l2cap.c` and its header file, `l2cap.h`, both of them are around 3k loc.
+I've defined `CONFIG_BT_L2CAP_DYNAMIC_CHANNEL, CONFIG_BT_L2CAP_ECRED`, and searched for their occurences. \
+I've found an interesting file: `l2cap.c` and its header file, `l2cap.h`, both of them are around 3k loc. \
 Note there are two different versions - one for host, and another one denoted as shell. 
 
-In order to learn the desired API of this kernel module, I've navigated through the header file. 
-Most of it contains definitions about structs and interfaces the module uses. 
+In order to learn the desired API of this kernel module, I've navigated through the header file. \
+Most of it contains definitions about structs and interfaces the module uses. \
 The exported API of this module is actually pretty simple, and consists of the following methods:
 ```c
 int bt_l2cap_server_register(struct bt_l2cap_server *server);
@@ -104,9 +103,9 @@ net_buf_unref(buf);
 return 0;
 }
 ```
-Indeed, we can see the L2CAP layer uses the credit mechanism as some sort of congestion control.
-The user packet starts with 2 bytes of credit, denoting the amount of available bytes. 
-This means a malicious packet may fully control the value of `credits`. 
+Indeed, we can see the L2CAP layer uses the credit mechanism as some sort of congestion control. \
+The user packet starts with 2 bytes of credit, denoting the amount of available bytes. \
+This means a malicious packet may fully control the value of `credits`.  
 
 The method `l2cap_chan_send_credits`:
 ```c
@@ -138,7 +137,7 @@ bt_l2cap_send(chan->chan.conn, BT_L2CAP_CID_LE_SIG, buf);
 BT_DBG("chan %p credits %u", chan, atomic_get(&chan->rx.credits));
 }
 ```
-There is a simple sanity check for the value of `credits`. 
+There is a simple sanity check for the value of `credits`. \
 As we can see, it is compared against `chan->rx.init_credits`, which is also `uint16_t`, so this check is OK. 
 
 Next, I've looked into `l2cap_recv`, which starts with the following definitions:
@@ -159,51 +158,35 @@ len = sys_le16_to_cpu(hdr->len);
 ...
 }
 ```
-While `struct net_buf->len` is `uint16_t`, operator `sizeof()` actually returns a `uint32_t`. 
+While `struct net_buf->len` is `uint16_t`, operator `sizeof()` actually returns a `uint32_t`. \
 While comparing `uint16_t` to `uint32_t`, the first will be sign-extended to match the 32-bitness, but since this is an unsigned comparision - this is OK.
 
-Next, the call for `net_buf_pull_mem` triggers `net_buf_simple_pull_mem`. 
+Next, the call for `net_buf_pull_mem` triggers `net_buf_simple_pull_mem`. \
 Notice how the internal buffer of `struct net_buf` is implemented:
 ```c
 union {
-
 /* The ABI of this struct must match net_buf_simple */
-
 struct {
-
 /** Pointer to the start of data in the buffer. */
-
 uint8_t *data;
-
 /** Length of the data behind the data pointer. */
-
 uint16_t len;
-
 /** Amount of data that this buffer can store. */
-
 uint16_t size;
-
 /** Start of the data storage. Not to be accessed
-
 * directly (the data pointer should be used
-
 * instead).
-
 */
-
 uint8_t *__buf;
-
 };
-
 struct net_buf_simple b;
-
 };
 ```
 According to the comment, the `len` attribute actually counts the `"data behind the data pointer"`, meaning that it includes the two members `len` and `size`, hence contains the size of the underlying buffer, plus an extra 4 bytes. 
 
-This means that in case the user sends an empty buffer, its length would be 4 bytes, and `hdr` would be initialized with 4 out-of-bounds bytes. 
-Alternatively, it means we can pick arbitrary bytes for the received packet header (4 bytes). 
-The packet's `hdr->code` may be used to trigger one handler of our wish. 
+This means that in case the user sends an empty buffer, its length would be 4 bytes, and `hdr` would be initialized with 4 out-of-bounds bytes. \
+Alternatively, it means we can pick arbitrary bytes for the received packet header (4 bytes). \
+The packet's `hdr->code` may be used to trigger one handler of our wish. \
 Three interesting of them:
 ```c
 #if defined(CONFIG_BT_L2CAP_ECRED)
@@ -219,7 +202,7 @@ case BT_L2CAP_ECRED_RECONF_REQ:
 le_ecred_reconf_req(l2cap, hdr->ident, buf);
 break;
 #endif /* defined(CONFIG_BT_L2CAP_ECRED) */```
-Most of `le_ecred_reconf_req` doesn't seem to contain vulnerable code.
+Most of `le_ecred_reconf_req` doesn't seem to contain vulnerable code. \
 However, while forging a response, it writes it to the buffer by simply calling `net_buf_add`:
 ```c
 response:
@@ -263,10 +246,10 @@ continue;
 }
 ...
 ```
-The array `dcid` is located on the stack, and contains 5 elements.
+The array `dcid` is located on the stack, and contains 5 elements. \
 Note how this array isn't initialized (which is another vuln).
 
-However, the iteration variable `i` may grow without any limitation, depending on the amount of `scid` elements located within the inserted user buffer.
+However, the iteration variable `i` may grow without any limitation, depending on the amount of `scid` elements located within the inserted user buffer. \
 This means that as long as we enter many `scid`s (may be the same one), we can override the stack with as many null-bytes as we wish!
 
 ### Vuln 0x02
@@ -299,13 +282,13 @@ net_buf_add_mem(buf, dcid, sizeof(scid) * i);
 ```
 We can see `l2cap_create_le_sig_pdu` is called, in order to forge an header consisting enough space for the response, and `i` amount of `scid`s.
 
-However, since the user input may fully control the amount of `scid`s, `sizeof(*rsp) + (sizeof(scid) * i)` may grow without bounds, potentially triggering an integer overflow. 
-This means the `len` attribute of the created response header will contain some very small value.
+However, since the user input may fully control the amount of `scid`s, `sizeof(*rsp) + (sizeof(scid) * i)` may grow without bounds, potentially triggering an integer overflow. \
+This means the `len` attribute of the created response header will contain some very small value. \
 That way, we may for example force the assertion of `net_buff_add` to fail, and crash the program. 
 
 ### Vuln 0x03
 
-The call for `net_buf_add_mem(buf, dcid, sizeof(scid) * i)` - as we fully control the value of `i`, and `dcid` is statically allocated on the stack. 
+The call for `net_buf_add_mem(buf, dcid, sizeof(scid) * i)` - as we fully control the value of `i`, and `dcid` is statically allocated on the stack. \
 It means we can leak stack content into the sent response buffer. 
 
 
