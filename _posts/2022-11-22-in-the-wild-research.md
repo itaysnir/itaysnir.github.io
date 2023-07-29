@@ -49,7 +49,7 @@ This is a better alternative than the regular "find all references", and allows 
 
 ## CVE-2021-3434 - Zephyr RTOS
 
-Im given a hint, that the attack surface is involved with Bluetooth's L2CAP packets. \
+The research attack surface is said to be involved with Bluetooth's L2CAP packets. \
 L2CAP is part of the Bluetooth stack, and serves as a "logical link control and adaptation" layer. \
 It offers segmentation and reassembly for large packets, hence allows them to be transmited across BT links. \
 It may receive packets of up to 64 kB, and breaks them to smaller MTU frames. The receiving end then reassembles these frames. \
@@ -294,7 +294,199 @@ It means we can leak stack content into the sent response buffer.
 
 ## CVE-2021-25217 -  ISC DHCP
 
-TODO
+The attack surface is said to be involved with parsing of lease files. \
+According to `man 5 dhcpd.leases`, a DHCP server saves a persistent DB (= on disk) of leases that it has assigned. \
+This DB file is ASCII file, containing series of lease declarations. \
+For every lease change, its new value is recorded at the end of the lease file - meaning the current value is the last written declaration. 
+
+Usually, the leases DB file is stored within `/var/lib/dhcpd/dhcpd.leases`. \
+In order to prevent this file from exploading, the file is rewritten from time to time - by creating a temporary lease file, renaming the old file as `/var/lib/dhcpd/dhcpd.leases~`. 
+
+A good starting point is found by searching for `"dhcpd.leases"` string:
+```c
+isc_result_t read_conf_file (const char *filename, struct group *group,
+			     int group_type, int leasep)
+{
+	int file;
+	struct parse *cfile;
+	isc_result_t status;
+
+	if ((file = open (filename, O_RDONLY)) < 0) {
+		if (leasep) {
+			log_error ("Can't open lease database %s: %m --",
+				   path_dhcpd_db);
+			log_error ("  check for failed database %s!",
+				   "rewrite attempt");
+			log_error ("Please read the dhcpd.leases manual%s",
+				   " page if you");
+			log_fatal ("don't know what to do about this.");
+		} else {
+			log_fatal ("Can't open %s: %m", filename);
+		}
+	}
+	...
+}
+```
+
+Then, in case the `leasep` flag is True, it initializes a `struct parse *cfile` via `new_parse`, and calls `lease_file_subparse`, which seems interesting:
+```c
+isc_result_t lease_file_subparse (struct parse *cfile)
+{
+	const char *val;
+	enum dhcp_token token;
+	isc_result_t status;
+
+	do {
+		token = next_token (&val, (unsigned *)0, cfile);
+		if (token == END_OF_FILE)
+			break;
+		if (token == LEASE) {
+			struct lease *lease = (struct lease *)0;
+			if (parse_lease_declaration (&lease, cfile)) {
+				enter_lease (lease);
+				lease_dereference (&lease, MDL);
+			} else
+				parse_warn (cfile,
+					    "possibly corrupt lease file");
+		} else if (token == IA_NA) {
+			parse_ia_na_declaration(cfile);
+		} else if (token == IA_TA) {
+			parse_ia_ta_declaration(cfile);
+		} else if (token == IA_PD) {
+			parse_ia_pd_declaration(cfile);
+		} else if (token == CLASS) {
+			parse_class_declaration(0, cfile, root_group,
+						CLASS_TYPE_CLASS);
+		} else if (token == SUBCLASS) {
+			parse_class_declaration(0, cfile, root_group,
+						CLASS_TYPE_SUBCLASS);
+		} else if (token == HOST) {
+			parse_host_declaration (cfile, root_group);
+		} else if (token == GROUP) {
+			parse_group_declaration (cfile, root_group);
+		...
+		} else if (token == AUTHORING_BYTE_ORDER) {
+			parse_authoring_byte_order(cfile);
+		} else {
+			log_error ("Corrupt lease file - possible data loss!");
+			skip_to_semi (cfile);
+		}
+
+	} while (1);
+
+	status = cfile->warnings_occurred ? DHCP_R_BADPARSE : ISC_R_SUCCESS;
+	return status;
+}
+```
+This function reads the lease file, token after token. 
+
+Most of the methods are irrelevant, as they require DHCPv6. \
+This leaves us with:
+```c
+parse_lease_declaration()
+enter_lease()
+lease_dereference()
+parse_class_declaration()
+parse_host_declaration()
+parse_group_declaration()
+```
+`parse_host_declaration` internally calls `parse_host_name`. \
+This method assembles multiple strings, splitted by dot, into a single allocated string, representing the hostname. 
+```c
+do {
+/* Read a token, which should be an identifier. */
+token = peek_token (&val, (unsigned *)0, cfile);
+if (!is_identifier (token) && token != NUMBER)
+break;
+skip_token(&val, (unsigned *)0, cfile);
+/* Store this identifier... */
+if (!(s = (char *)dmalloc (strlen (val) + 1, MDL)))
+log_fatal ("can't allocate temp space for hostname.");
+strcpy (s, val);
+c = cons ((caddr_t)s, c);
+len += strlen (s) + 1;
+/* Look for a dot; if it's there, keep going, otherwise
+we're done. */
+token = peek_token (&val, (unsigned *)0, cfile);
+if (token == DOT) {
+token = next_token (&val, (unsigned *)0, cfile);
+ltid = 1;
+} else
+ltid = 0;
+} while (token == DOT);
+```
+Note how the `len` variable may grow without limitation. \
+However, in order to exploit this integer overflow, a file of length 4GB would be needed. 
+
+I've taken a deeper look into the following methods, as hinted by looking into semicolon parsing:
+```c
+parse_ip6_addr
+parse_cshl
+parse_X
+```
+###  Vuln
+The function `parse_X` is being called from multiple sites, most of them sending it a local stack buffer, and its size:
+```c
+/* Consider merging parse_cshl into this. */
+
+int parse_X (cfile, buf, max)
+struct parse *cfile;
+u_int8_t *buf;
+unsigned max;
+{
+int token;
+const char *val;
+unsigned len;
+token = peek_token (&val, (unsigned *)0, cfile);
+if (token == NUMBER_OR_NAME || token == NUMBER) {
+len = 0;
+
+do {
+token = next_token (&val, (unsigned *)0, cfile);
+if (token != NUMBER && token != NUMBER_OR_NAME) {
+parse_warn (cfile,
+"expecting hexadecimal constant.");
+skip_to_semi (cfile);
+return 0;
+
+}
+convert_num (cfile, &buf [len], val, 16, 8);
+
+if (len++ > max) {
+parse_warn (cfile,
+"hexadecimal constant too long.");
+skip_to_semi (cfile);
+return 0;
+
+}
+token = peek_token (&val, (unsigned *)0, cfile);
+
+if (token == COLON)
+token = next_token (&val,
+(unsigned *)0, cfile);
+
+} while (token == COLON);
+
+val = (char *)buf;
+}
+
+return len;
+}
+```
+
+In case of inserting multiple colons, `convert_num` would be called multiple times. \
+While there is a sanity check `if(len++ > max)`, it isn't sufficient for two reasons:
+
+1. It is actually performed after `convert_num` is being issued, classic off-by-one scenario
+2. In case `max == 128`, the last possible index to access should be 127. 
+   However, the check is being performed for `max` , instead of `max - 1`. 
+   Moreover, note this is a `right++` operator, meaning the increment would occur only after the check was being performed.
+   
+These findings yields the fact that there is a possible off-by-two stack vulnerability here, as `128++ > 128` would be evaluated to false, yielding another iteration.
+
+The methods `parse_cshl` and `parse_ip6_addr` didn't contain any vuln. 
+
+
 
 
 [eclipse]: https://www.eclipse.org/downloads/packages/release/2022-12/r/eclipse-ide-cc-developers
