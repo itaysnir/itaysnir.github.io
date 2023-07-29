@@ -486,7 +486,61 @@ These findings yields the fact that there is a possible off-by-two stack vulnera
 
 The methods `parse_cshl` and `parse_ip6_addr` didn't contain any vuln. 
 
+## CVE-2019-2552 - VirtualBox TFTP
 
+TFTP is a simple protocol, provides basic ("trivial") file transfer function, with no user authentication. 
 
+I've first looked into `proxy_tftpd.c` within `NetworkServices`. \
+Some of the interesting routines are:
+```c
+static void tftpd_recv(void *, struct udp_pcb *, struct pbuf *, ip_addr_t *, u16_t);
+static void tftpd_rrq(struct pbuf *, ip_addr_t *, u16_t);
+static void tftp_xfer_recv(void *, struct udp_pcb *, struct pbuf *, ip_addr_t *, u16_t);
+static void tftp_recv_ack(struct xfer *, u16_t);
+static void tftp_fillbuf(struct xfer *);
+static void tftp_send(struct xfer *);
+```
+
+The method `tftpReadDataBlock` reads user-controlled data into a heap pointer:
+```c
+DECLINLINE(int) tftpReadDataBlock(PNATState pData,
+PTFTPSESSION pcTftpSession,
+uint8_t *pu8Data,
+int *pcbReadData)
+{
+...
+AssertReturn(pcTftpSession->OptionBlkSize.u64Value < UINT16_MAX, VERR_INVALID_PARAMETER);
+
+u16BlkSize = (uint16_t)pcTftpSession->OptionBlkSize.u64Value;
+...
+if (pcbReadData)
+{
+size_t cbRead;
+rc = RTFileSeek(hSessionFile,
+pcTftpSession->cbTransfered,
+RTFILE_SEEK_BEGIN,
+NULL);
+...
+rc = RTFileRead(hSessionFile, pu8Data, u16BlkSize, &cbRead);
+```
+However, `RTFileRead` simply reads the specified block size amount of bytes, into `pu8Data`. 
+The only call site of this function is from `tftpSendData`:
+```c
+m = slirpTftpMbufAlloc(pData);
+
+if (!m)
+return -1;
+
+m->m_data += if_maxlinkhdr;
+m->m_pkthdr.header = mtod(m, void *);
+pTftpIpHeader = mtod(m, PTFTPIPHDR);
+m->m_len = sizeof(TFTPIPHDR);
+pTftpIpHeader->u16TftpOpType = RT_H2N_U16_C(TFTP_DATA);
+pTftpIpHeader->Core.u16TftpOpCode = RT_H2N_U16(pTftpSession->cTftpAck);
+
+rc = tftpReadDataBlock(pData, pTftpSession, (uint8_t *)&pTftpIpHeader->Core.u16TftpOpCode + sizeof(uint16_t), &cbRead);
+```
+
+There are no boundaries check of the amount of space left within `pu8Data`, hence resulting a heap overflow. 
 
 [eclipse]: https://www.eclipse.org/downloads/packages/release/2022-12/r/eclipse-ide-cc-developers
