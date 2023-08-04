@@ -176,35 +176,35 @@ gg, G
 diw
 ```
  
-14.  Visual line mode, visual block mode (good for coloun oriented editing)
-```
+14. Visual line mode, visual block mode (good for coloun oriented editing)
+```bash
 V
 ctrl + V
 ```
- 
+
 15. Indentation
-```
-Within visual mode:
+```bash
+<visual-mode>
 <, > shifts the block
 = indents the block 
 
-Outside visual mode:
+<outside-visual-mode>
 <<, >> shifts current line
 == indents line
 ```
 
-16.  Repeat last operation
-```
+16. Repeat last operation
+```bash
 .
 ```
- 
-17.  Centerize current line
-```
+
+17. Centerize current line
+```bash
 zz
 ```
- 
-18.  Swap all occurances of `foo` to `bar`
-```
+
+
+18. Swap all occurances of `foo` to `bar`
+```bash
 :%s/foo/bar/g
 ```
-
