@@ -192,18 +192,19 @@ Outside visual mode:
 <<, >> shifts current line
 == indents line
 ```
-17. Repeat last operation
+
+16.  Repeat last operation
 ```
 .
 ```
  
-18.  Centerize current line
+17.  Centerize current line
 ```
 zz
 ```
  
-19.  Swap all occurances of `foo` to `bar`
+18.  Swap all occurances of `foo` to `bar`
 ```
 :%s/foo/bar/g
 ```
- 
+
