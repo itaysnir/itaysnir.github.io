@@ -490,17 +490,7 @@ The methods `parse_cshl` and `parse_ip6_addr` didn't contain any vuln.
 
 TFTP is a simple protocol, provides basic ("trivial") file transfer function, with no user authentication. 
 
-I've first looked into `proxy_tftpd.c` within `NetworkServices`. \
-Some of the interesting routines are:
-```c
-static void tftpd_recv(void *, struct udp_pcb *, struct pbuf *, ip_addr_t *, u16_t);
-static void tftpd_rrq(struct pbuf *, ip_addr_t *, u16_t);
-static void tftp_xfer_recv(void *, struct udp_pcb *, struct pbuf *, ip_addr_t *, u16_t);
-static void tftp_recv_ack(struct xfer *, u16_t);
-static void tftp_fillbuf(struct xfer *);
-static void tftp_send(struct xfer *);
-```
-
+I've first looked into `tftpd.c`.
 The method `tftpReadDataBlock` reads user-controlled data into a heap pointer:
 ```c
 DECLINLINE(int) tftpReadDataBlock(PNATState pData,
@@ -542,5 +532,195 @@ rc = tftpReadDataBlock(pData, pTftpSession, (uint8_t *)&pTftpIpHeader->Core.u16T
 ```
 
 There are no boundaries check of the amount of space left within `pu8Data`, hence resulting a heap overflow. 
+
+
+## CVE-2016-5610 - VirtualBox DHCP/BOOTP
+
+The attack surface is DHCP / BOOTP.
+BOOTP (bootstrap protocol) is a TCP/IP protocol, that allows a client to configure its IP address.
+A BOOTP server automatically assigns IP address from an available pool, for certain duration. 
+BOOTP is actually the basis for DHCP protocol. 
+DHCP servers are used to receive client requests, and this will serves as the focused attack surface. 
+
+It is good to know that VirtualBox guests by default are configured to use NAT. 
+Each VM is assigned its own emulated DHCP server, which runs in IP `10.0.2.2`, and configures ip address for the VM, within the `10.0.2.X` subnet.
+Notice that packets sent to this DHCP server are parsed by host process, as the host must keep track of the allocated IP addresses, avoiding any IP collisions between two VMs. 
+
+I've searched for the keyword `bootp` within VirtualBox.
+`bootp.h` defines DHCP packet as follows:
+```c
+#define DHCP_OPT_LEN            312
+
+/* RFC 2131 */
+struct bootp_t
+{
+    struct ip      ip;                          /**< header: IP header */
+    struct udphdr  udp;                         /**< header: UDP header */
+    uint8_t        bp_op;                       /**< opcode (BOOTP_REQUEST, BOOTP_REPLY) */
+    uint8_t        bp_htype;                    /**< hardware type */
+    uint8_t        bp_hlen;                     /**< hardware address length */
+    uint8_t        bp_hops;                     /**< hop count */
+    uint32_t       bp_xid;                      /**< transaction ID */
+    uint16_t       bp_secs;                     /**< numnber of seconds */
+    uint16_t       bp_flags;                    /**< flags (DHCP_FLAGS_B) */
+    struct in_addr bp_ciaddr;                   /**< client IP address */
+    struct in_addr bp_yiaddr;                   /**< your IP address */
+    struct in_addr bp_siaddr;                   /**< server IP address */
+    struct in_addr bp_giaddr;                   /**< gateway IP address */
+    uint8_t        bp_hwaddr[16];               /** client hardware address */
+    uint8_t        bp_sname[64];                /** server host name */
+    uint8_t        bp_file[128];                /** boot filename */
+    uint8_t        bp_vend[DHCP_OPT_LEN];       /**< vendor specific info */
+};
+```
+The most interesting source file, is of course `bootp.c`.
+
+### Vuln 0x01
+
+Within the following snipped, `vend` is a pointer towards user-controlled input:
+```c
+static uint8_t *dhcp_find_option(uint8_t *vend, uint8_t tag)
+{
+    uint8_t *q = vend;
+    uint8_t len;
+    . . .
+    while(*q != RFC1533_END)          
+        if (*q == RFC1533_PAD)
+        {
+            q++;   
+        }
+        if (*q == tag)
+            return q;   
+        q++;
+        len = *q;    
+        q += 1 + len;   
+    }
+    return NULL;
+}
+```
+As long as `*q != RFC1533_END`, this pointer increments without any bound. 
+That is a clear out-of-bounds read vuln. 
+
+### Vuln 0x02
+
+```c
+static int dhcp_decode_request(PNATState pData, struct bootp_t *bp, struct mbuf *m)
+{
+. . .
+    switch (dhcp_stat)
+    {
+        case RENEWING:
+ . . .
+               Assert((bp->bp_hlen == ETH_ALEN));
+               memcpy(bc->macaddr, bp->bp_hwaddr, bp->bp_hlen);
+               bc->addr.s_addr = bp->bp_ciaddr.s_addr;
+            }
+            break;
+
+        case INIT_REBOOT:
+ . . .
+            Assert((bp->bp_hlen == ETH_ALEN));
+            memcpy(bc->macaddr, bp->bp_hwaddr, bp->bp_hlen);
+            bc->addr.s_addr = ui32;
+            break;
+. . .
+}
+```
+`bp` serves as a pointer towards the controlled bootp packet. 
+While we may fully control its memeber, and `bp->bp_hlen` specifically, an `Assert` is being applied, that verifies the inserted length indeed matches the length of a mac address, guarding against any heap overflow.
+
+However, apperently this assertion is only compiled for DEBUG builds, not RELEASE!
+
+This means the production code lacks this simple check, and easy heap-overflow exists. 
+
+## CVE-2016-4001 - QEMU Stellaris Ethernet Controller
+
+The obvious file for this attack surface is `stellaris_enet.c`. 
+The vuln resides within `stellaris_enet_receive`:
+```c
+/* TODO: Implement MAC address filtering. */
+
+static ssize_t stellaris_enet_receive(NetClientState *nc, const uint8_t *buf, size_t size)
+{
+stellaris_enet_state *s = qemu_get_nic_opaque(nc);
+int n;
+uint8_t *p;
+uint32_t crc;
+
+if ((s->rctl & SE_RCTL_RXEN) == 0)
+return -1;
+if (s->np >= 31) {
+return 0;
+}
+
+DPRINTF("Received packet len=%zu\n", size);
+n = s->next_packet + s->np;
+if (n >= 31)
+n -= 31;
+s->np++;
+s->rx[n].len = size + 6;
+p = s->rx[n].data;
+*(p++) = (size + 6);
+*(p++) = (size + 6) >> 8;
+
+memcpy (p, buf, size);
+
+p += size;
+crc = crc32(~0, buf, size);
+*(p++) = crc;
+*(p++) = crc >> 8;
+*(p++) = crc >> 16;
+*(p++) = crc >> 24;
+
+/* Clear the remaining bytes in the last word. */
+
+if ((size & 3) != 2) {
+memset(p, 0, (6 - size) & 3);
+}
+
+s->ris |= SE_INT_RX;
+stellaris_enet_update(s);
+
+return size;
+}
+```
+Since the attacker may send arbitrary ethernet packet, `size` may be arbitrary large. 
+Therefore, since `p` is an array of `uint8_t[2048]`,  the `memcpy` call may overflow, as there is no check regarding the `size`.
+
+A cooler vuln actually hides within the `memset` call:
+```c
+/* Clear the remaining bytes in the last word. */
+if ((size & 3) != 2) {
+memset(p, 0, (6 - size) & 3);
+}
+```
+The last argument is interpreted as `size_t`, meaning an unsigned value.
+While being un-intuitive, on a negative integer, operator `&`, in a similar manner to operator `%`, returns a negative value. 
+Basically, it just interprets the number as a positive value, calculates the operator on it, and negates the result.
+
+This means that in case `6 - size = -1`, the amount of null'ed bytes would be `0xffffffff`!
+
+
+## CVE-2016-4002 - QEMU Mipsnet Ethernet Controller
+
+Within `mipsnet.c`:
+```c
+static ssize_t mipsnet_receive(NetClientState *nc, const uint8_t *buf, size_t size)
+{
+MIPSnetState *s = qemu_get_nic_opaque(nc);
+trace_mipsnet_receive(size);
+if (!mipsnet_can_receive(nc))
+return 0;
+s->busy = 1;
+
+/* Just accept everything. */
+/* Write packet data. */
+memcpy(s->rx_buffer, buf, size);
+...
+}
+```
+Again, no check is being made regarding `size`. 
+Qemu may be configured with large packets, yielding ethernet packets above 1.5k bytes, triggering a heap overflow. 
+
 
 [eclipse]: https://www.eclipse.org/downloads/packages/release/2022-12/r/eclipse-ide-cc-developers
