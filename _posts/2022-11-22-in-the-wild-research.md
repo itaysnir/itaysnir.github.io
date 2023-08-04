@@ -490,7 +490,7 @@ The methods `parse_cshl` and `parse_ip6_addr` didn't contain any vuln.
 
 TFTP is a simple protocol, provides basic ("trivial") file transfer function, with no user authentication. 
 
-I've first looked into `tftpd.c`.
+I've first looked into `tftpd.c`. \
 The method `tftpReadDataBlock` reads user-controlled data into a heap pointer:
 ```c
 DECLINLINE(int) tftpReadDataBlock(PNATState pData,
@@ -513,7 +513,7 @@ NULL);
 ...
 rc = RTFileRead(hSessionFile, pu8Data, u16BlkSize, &cbRead);
 ```
-However, `RTFileRead` simply reads the specified block size amount of bytes, into `pu8Data`. 
+However, `RTFileRead` simply reads the specified block size amount of bytes, into `pu8Data`. \
 The only call site of this function is from `tftpSendData`:
 ```c
 m = slirpTftpMbufAlloc(pData);
@@ -536,17 +536,17 @@ There are no boundaries check of the amount of space left within `pu8Data`, henc
 
 ## CVE-2016-5610 - VirtualBox DHCP/BOOTP
 
-The attack surface is DHCP / BOOTP.
-BOOTP (bootstrap protocol) is a TCP/IP protocol, that allows a client to configure its IP address.
-A BOOTP server automatically assigns IP address from an available pool, for certain duration. 
-BOOTP is actually the basis for DHCP protocol. 
+The attack surface is DHCP / BOOTP. \
+BOOTP (bootstrap protocol) is a TCP/IP protocol, that allows a client to configure its IP address. \
+A BOOTP server automatically assigns IP address from an available pool, for certain duration. \
+BOOTP is actually the basis for DHCP protocol. \
 DHCP servers are used to receive client requests, and this will serves as the focused attack surface. 
 
-It is good to know that VirtualBox guests by default are configured to use NAT. 
-Each VM is assigned its own emulated DHCP server, which runs in IP `10.0.2.2`, and configures ip address for the VM, within the `10.0.2.X` subnet.
+It is good to know that VirtualBox guests by default are configured to use NAT. \
+Each VM is assigned its own emulated DHCP server, which runs in IP `10.0.2.2`, and configures ip address for the VM, within the `10.0.2.X` subnet. \
 Notice that packets sent to this DHCP server are parsed by host process, as the host must keep track of the allocated IP addresses, avoiding any IP collisions between two VMs. 
 
-I've searched for the keyword `bootp` within VirtualBox.
+I've searched for the keyword `bootp` within VirtualBox. \
 `bootp.h` defines DHCP packet as follows:
 ```c
 #define DHCP_OPT_LEN            312
@@ -598,7 +598,7 @@ static uint8_t *dhcp_find_option(uint8_t *vend, uint8_t tag)
     return NULL;
 }
 ```
-As long as `*q != RFC1533_END`, this pointer increments without any bound. 
+As long as `*q != RFC1533_END`, this pointer increments without any bound. \
 That is a clear out-of-bounds read vuln. 
 
 ### Vuln 0x02
@@ -626,7 +626,7 @@ static int dhcp_decode_request(PNATState pData, struct bootp_t *bp, struct mbuf 
 . . .
 }
 ```
-`bp` serves as a pointer towards the controlled bootp packet. 
+`bp` serves as a pointer towards the controlled bootp packet. \
 While we may fully control its memeber, and `bp->bp_hlen` specifically, an `Assert` is being applied, that verifies the inserted length indeed matches the length of a mac address, guarding against any heap overflow.
 
 However, apperently this assertion is only compiled for DEBUG builds, not RELEASE!
@@ -635,7 +635,7 @@ This means the production code lacks this simple check, and easy heap-overflow e
 
 ## CVE-2016-4001 - QEMU Stellaris Ethernet Controller
 
-The obvious file for this attack surface is `stellaris_enet.c`. 
+The obvious file for this attack surface is `stellaris_enet.c`. \
 The vuln resides within `stellaris_enet_receive`:
 ```c
 /* TODO: Implement MAC address filtering. */
@@ -684,7 +684,7 @@ stellaris_enet_update(s);
 return size;
 }
 ```
-Since the attacker may send arbitrary ethernet packet, `size` may be arbitrary large. 
+Since the attacker may send arbitrary ethernet packet, `size` may be arbitrary large. \
 Therefore, since `p` is an array of `uint8_t[2048]`,  the `memcpy` call may overflow, as there is no check regarding the `size`.
 
 A cooler vuln actually hides within the `memset` call:
@@ -694,8 +694,8 @@ if ((size & 3) != 2) {
 memset(p, 0, (6 - size) & 3);
 }
 ```
-The last argument is interpreted as `size_t`, meaning an unsigned value.
-While being un-intuitive, on a negative integer, operator `&`, in a similar manner to operator `%`, returns a negative value. 
+The last argument is interpreted as `size_t`, meaning an unsigned value.\
+While being un-intuitive, on a negative integer, operator `&`, in a similar manner to operator `%`, returns a negative value. \
 Basically, it just interprets the number as a positive value, calculates the operator on it, and negates the result.
 
 This means that in case `6 - size = -1`, the amount of null'ed bytes would be `0xffffffff`!
@@ -719,7 +719,7 @@ memcpy(s->rx_buffer, buf, size);
 ...
 }
 ```
-Again, no check is being made regarding `size`. 
+Again, no check is being made regarding `size`. \
 Qemu may be configured with large packets, yielding ethernet packets above 1.5k bytes, triggering a heap overflow. 
 
 

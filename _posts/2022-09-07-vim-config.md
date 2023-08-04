@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Vim Configuration"
+title:  "Vim Configuration And Cheatsheet"
 date:   2022-09-07 19:59:43 +0300
 categories: jekyll update
 ---
@@ -106,3 +106,104 @@ if has("cscope")
         noremap <F10> :cclose<cr>
 endif
 ```
+
+## Cheatsheet
+
+1. Exit and save multiple opened vim panes
+   ```bash
+:wqa
+```
+
+2.  Exit without save
+   ```bash
+:q!
+```
+
+3.  Insert / append in beggining / end of line (similar to `i, a`)
+   ```bash
+I, A
+```
+
+4.  Open newline below / above
+   ```bash
+o, O
+```
+
+5.  Go to prior / next word, only spaces serves as separators (unlike `b, w`)
+   ```bash
+B, W
+```
+
+6.  Delete from current cursor location to end of line
+   ```bash
+D
+```
+
+7.  Undo, redo
+   ```bash
+u, ctrl + R
+```
+
+8.  Delete word, while being inside of it
+```
+diw
+```
+ 
+ 9. Delete all stuff between opening bracket to closing bracket, works anywhere inside of it
+```
+di(
+di{
+di[
+```
+
+10.  Go to the pairing bracket
+```
+%
+```
+ 
+11. Go to file start, file end
+```
+gg, G
+```
+ 
+12.  Copy next 5 lines
+```
+5yy
+```
+ 
+13.  Delete word, while being inside of it
+```
+diw
+```
+ 
+14.  Visual line mode, visual block mode (good for coloun oriented editing)
+```
+V
+ctrl + V
+```
+ 
+15. Indentation
+```
+Within visual mode:
+<, > shifts the block
+= indents the block 
+
+Outside visual mode:
+<<, >> shifts current line
+== indents line
+```
+17. Repeat last operation
+```
+.
+```
+ 
+18.  Centerize current line
+```
+zz
+```
+ 
+19.  Swap all occurances of `foo` to `bar`
+```
+:%s/foo/bar/g
+```
+ 
