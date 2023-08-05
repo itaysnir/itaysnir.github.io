@@ -83,12 +83,7 @@ The exploit for x86 is simple (would use it as a skeleton for most of the challe
 import pwn  
 import logging  
   
-  
-logging.basicConfig(  
-    level=logging.DEBUG,  
-    format= '[%(asctime)s] {%(pathname)s:%(lineno)d} %(levelname)s - %(message)s',  
-    datefmt='%H:%M:%S'  
-)  
+
 logger = logging.getLogger(__name__)  
   
 DEBUG = True  
