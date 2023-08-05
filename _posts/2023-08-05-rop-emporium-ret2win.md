@@ -81,5 +81,35 @@ $ sudo dmesg
 The exploit for x86 is simple (would use it as a skeleton for most of the challenges):
 [solution][script-x86]
 
+## x64
 
-[script-x86] https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x86/exploit.py
+For x64, mostly the padding is being changed (now to 40 bytes), as well as usage of 8-byte addresses. \
+However, while executing the adapted exploit, the goal flag function was indeed hit, but crashed upon the call for `system(""/bin/cat flag")`.
+
+After some quick research, I've found out it was due to mis-aligned `rsp` value:
+
+```bash
+(gdb) x/10i $rip
+=> 0x400769 <ret2win+19>:       call   0x400560 <system@plt>
+   0x40076e <ret2win+24>:       nop
+   0x40076f <ret2win+25>:       pop    rbp
+   0x400770 <ret2win+26>:       ret
+   0x400771:    cs nop WORD PTR [rax+rax*1+0x0]
+   0x40077b:    nop    DWORD PTR [rax+rax*1+0x0]
+   0x400780 <__libc_csu_init>:  push   r15
+   0x400782 <__libc_csu_init+2>:        push   r14
+   0x400784 <__libc_csu_init+4>:        mov    r15,rdx
+   0x400787 <__libc_csu_init+7>:        push   r13
+(gdb) p $rsp
+$1 = (void *) 0x7fff7801efa8
+```
+
+Originally, I've jumped to the start of `ret2win == 0x400756`. \
+However, I can simply skip over the new frame opening `push rbp, mov rbp, rsp` and just jump directly to printing the flag, e.g `0x400764`. \
+That way, by avoiding the extra push, the stack should be aligned correctly. 
+
+[solution][script-x64]
+
+[script-x86]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x86/exploit.py
+[script-x64]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x64/exploit.py
+
