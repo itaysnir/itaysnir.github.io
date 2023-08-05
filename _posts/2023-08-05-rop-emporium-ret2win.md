@@ -10,6 +10,7 @@ categories: jekyll update
 * TOC
 {:toc}
 ## Introduction
+
 Lately I've decided that my next current goal is to gain deeper exploitation knowledge, regarding ARM and MIPS architectures. And whats better than learning by hands?
 The ROP Emporium platform offers 8 exploitation challenges, for `x86, x64, ARMv5, mips`. 
 Lets do them all!
