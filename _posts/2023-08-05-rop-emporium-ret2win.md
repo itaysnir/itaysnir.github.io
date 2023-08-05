@@ -16,9 +16,8 @@ Lets do them all!
 
 ## Tools
 To find ROP gadgets, my regular go-to tool is `ropper`. \
-Just in case it might miss few gadgets here and there, I would also use `ROPGadget` (which is abit more recommended for ARM architecture).
-
-`pwntools` is mandatory for such challenges, and the official `pwntools` github even contains ROP Emporium first challenge as an example: [example-ret2win][pwntools-ret2win]
+Just in case it might miss few gadgets here and there, I would also use `ROPGadget` (which is abit more recommended for ARM architecture). \
+`pwntools` is mandatory for such challenges.
 
 As a debugger, I'd use `pwndbg`. \
 It has great integration with `pwntools`, which can automate debugging tasks by running `gdb` from a pythonic script. 
@@ -152,8 +151,3 @@ def main():
 if __name__ == '__main__':  
     main()
 ```
-
-
-
-[pwntools-ret2win] https://gist.github.com/zachriggle/e4d591db7ceaafbe8ea32b461e239320
-
