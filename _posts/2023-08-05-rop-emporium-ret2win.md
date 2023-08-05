@@ -78,7 +78,8 @@ $ sudo dmesg
 [ 4285.836884] Code: Unable to access opcode bytes at RIP 0x42424218.
 ```
 
-The exploit for x86 is simple (would use it as a skeleton for most of the challenges):
+The exploit for x86 is simple (would use it as a skeleton for most of the challenges).
+
 [solution][script-x86]
 
 ## x64
@@ -110,6 +111,38 @@ That way, by avoiding the extra push, the stack should be aligned correctly.
 
 [solution][script-x64]
 
+## MIPS
+
+First, I've configured qemu-user mips:
+
+```bash
+$ sudo apt install qemu-user
+$ sudo apt install libc6-mipsel-cross
+$ sudo mkdir /etc/qemu-binfmt
+$ sudo ln -s /usr/mipsel-linux-gnu /etc/qemu-binfmt/mipsel
+```
+
+Debugging is easy:
+```bash
+# pane 1
+$ qemu-mipsel -g 1234 ret2win_mipsel
+
+# pane 2
+$ gdb-multiarch
+file ret2win_mipsel
+target remote localhost:1234
+```
+The shellcode itself is similar to the 32-bit x86, just with 36 bytes of padding instead of 40. \
+Funnily, because of the additional `ra` register usage, upon overriding this register a jump-loop occurs, and the flag is being printed infinitely. 
+
+[solution][solution-mips]
+
+## ARM
+
+Similar steps as within the mips. 
+
+
 [script-x86]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x86/exploit.py
 [script-x64]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x64/exploit.py
+[script-mips]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/mips/exploit.py
 
