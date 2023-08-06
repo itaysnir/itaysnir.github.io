@@ -11,8 +11,8 @@ categories: jekyll update
 {:toc}
 ## Introduction
 
-Lately I've decided that my next current goal is to gain deeper exploitation knowledge, regarding ARM and MIPS architectures. And whats better than learning by hands?
-The ROP Emporium platform offers 8 exploitation challenges, for `x86, x64, ARMv5, mips`. 
+Lately I've decided that my next current goal is to gain deeper exploitation knowledge, regarding ARM and MIPS architectures. And whats better than learning by hands? \
+The ROP Emporium platform offers 8 exploitation challenges, for `x86, x64, ARMv5, mips`. \
 Lets do them all!
 
 ## Tools
@@ -139,7 +139,53 @@ Funnily, because of the additional `ra` register usage, upon overriding this reg
 
 ### MIPS Conventions
 
-Write here abit about the conventions of registers, calling functions, etc.
+32-bit RISC arch. Usually big-endian, `mipsel` is actually little-endian. \
+The set of possible opcodes is actually pretty short:
+```bash
+add, sub, mult, multu, div, divu, mfhi, mflo, lis, lw, sw, slt, sltu, beq, bne, jr, jalr 
+
+or the pseudo-opcode .word
+```
+
+The operand may be immediate, register (denoted  by `$num`) or label. \
+Note that each register is associated with a number, as can be found within the following table: [table][mips-regs], [here][mips-opcodes] or [here][mips-inst-set]. \
+There are a total of 32 registers, hence a register is encoded by 5 bits within every instruction. 
+
+Some opcodes take 3 register operands - `add, sub, slt, sltu`:
+```bash
+add $d, $s, $t  # result: $d = $s + $t
+```
+
+Other opcodes take 2 register operands - `mult, multu, div, divu`. \
+Note that `$d` is encoded as 0 within the instruction:
+```bash
+mult $s, $t  # $s = $s * $t
+```
+
+Others take a single register operand - `mfhi, mflo, lis` (copies from special registers, or from the next memory word). \
+Note `$s, $t` are encoded as 0's. 
+```bash
+lis $d  # $d = 27
+.word 27
+```
+
+Another type of format involves immediate values, such as 2 registers and one immediate - `lw, sw`. \
+Note the immediate is encoded as 16-bit signed value:
+```bash
+lw $t, i($s)  # $t = mem[$s + i]
+```
+
+Other similar type - `beq, bne`:
+```bash
+beq $s, $t, i  # if $s == $t, PC = PC + i * 4
+```
+
+Single register - `jr, jalr`:
+```bash
+jalr $s  # jump and link register: $ra = pc, pc = $s
+```
+
+
 
 ## ARM
 
@@ -176,3 +222,6 @@ Add talking about regs, calling funcs, etc.
 [script-x64]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/x64/exploit.py
 [script-mips]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/mips/exploit.py
 [script-arm]: https://github.com/itaysnir/ROP-Emporium-Solutions/blob/main/ret2win/arm/exploit.py
+[mips-regs]: https://minnie.tuhs.org/CompArch/Resources/mips_quick_tutorial.html
+[mips-opcodes]: https://student.cs.uwaterloo.ca/~cs241/mips/mipsref.pdf
+[mips-inst-set]: https://www.dsi.unive.it/~gasparetto/materials/MIPS_Instruction_Set.pdf
