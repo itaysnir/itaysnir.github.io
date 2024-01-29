@@ -99,6 +99,28 @@ As long as we use classes and modules, `use strict` is enabled automatically.
 
 ### Variables
 
+Using the `let` keyword:
+
+```js
+let message = 'Hello!';  // declare + define
+
+alert(message);
+```
+
+Older scripts use the `var` keyword, instead of `let`. 
+
+To declare a constant variable, use `const`. \
+It is a good practice to use uppercase letters for them:
+
+```js
+const COLOR_RED = "#F00";
+const COLOR_BLUE = "#00F";
+
+let color = COLOR_BLUE;
+alert(color);
+```
+
+### Data types
 
 
 
