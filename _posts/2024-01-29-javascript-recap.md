@@ -45,7 +45,7 @@ Mandatory for debugging!
 JS programs can be inserted into HTML documents via `<script>`. \
 The code within the tag is automatically executed when the browser processes the tag. 
 
-```js
+```html
 <!DOCTYPE HTML>
 <html>
 
@@ -64,7 +64,40 @@ The code within the tag is automatically executed when the browser processes the
 </html>
 ```
 
+The `<script>` tag have few attributes that are common with old code:
 
+`type` - old HTML standard required a script to have a type. \
+Usually it was `type="text/javascript"`. 
+
+`language` - no longer makes sense, as JS is the default language. 
+
+Notice we can export JS code to seperate file. \
+In that case, we can attach script via the `src` attribute:
+
+```html
+<script src="/path/to/script.js"></script>
+```
+
+We can also specify relative path. \ 
+
+The benefit of separate file, is that the browser will download it, and store it in its cache. 
+
+### Code Structure
+
+It is a good practice to use semicolon between statements. 
+
+Comments are line in `C`: `//` for line comment, `/* */` for block. \
+Comments are friends. Use them.
+
+### "use strict";
+
+When it is located at the top of the script, the whole script is interpreted the "modern" way, not the old-compatible way.
+
+Notice it *must* be at the top of the scripts, otherwise `"use strict";` is ignored.
+
+As long as we use classes and modules, `use strict` is enabled automatically. 
+
+### Variables
 
 
 
