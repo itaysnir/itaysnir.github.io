@@ -1,5 +1,4 @@
 ---
----
 layout: post
 title:  "Javascript Recap"
 date:   2024-01-29 19:59:44 +0300
@@ -10,6 +9,8 @@ categories: jekyll update
 * TOC
 {:toc}
 ## Introduction
+
+### General
 
 JS can execute not only in browsers (clients), but also on servers or any device that has JS engine (such as V8, that also runs within Node.js). 
 
@@ -24,5 +25,50 @@ Moreover, different tabs are usually "isolated", and js from one page cannot acc
 
 Notice there are other languages created over JS (transpiled to js before they run in the browser), such as `TypeScript` (adds strict data typing). 
 
-## Manuals, Specifications
+### Manuals, Specifications
 
+[ECMA-262][ECMA-262] contains the most formalized information about js, and defines the language. \
+But for everyday use, `devdocs.io` is usually enough.
+
+A great manual is Mozilla's MDN JS Reference: [MDN][MDN].
+
+### Developer Console
+
+Within developer tools - all browsers has them, but usually Chrome and Firefox's are the best. \
+Open with `F12`. \
+Mandatory for debugging!
+
+## JS Fundamentals
+
+### Hello, world
+
+JS programs can be inserted into HTML documents via `<script>`. \
+The code within the tag is automatically executed when the browser processes the tag. 
+
+```js
+<!DOCTYPE HTML>
+<html>
+
+<body>
+
+  <p>Before the script...</p>
+
+  <script>
+    alert( 'Hello, world!' );
+  </script>
+
+  <p>...After the script.</p>
+
+</body>
+
+</html>
+```
+
+
+
+
+
+
+
+[ECMA-262]: https://ecma-international.org/publications-and-standards/standards/ecma-262/
+[MDN]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference
