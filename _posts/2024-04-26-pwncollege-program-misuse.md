@@ -46,8 +46,7 @@ cat /flag.zip
 `genisoimage ` - allows creating ISO9660 filesystem, and more. \
 [genisoimage docs][genisoimage docs] 
 
-According to docs, this binary is safe as suid. \
-This is, of course, pure bs. 
+According to the docs, this binary is safe as suid. This is, of course, pure bs. 
 
 I’ve wrote the following script that goes through all of the possible flags involving outer file interaction, as follow:
 
