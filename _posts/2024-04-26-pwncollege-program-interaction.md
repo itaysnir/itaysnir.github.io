@@ -10,7 +10,9 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-This is the very first module within pwn-college. \ The module deals with common ways to interact with linux processes, which are mandatory for binary exploitation.
+This is the very first module within pwn-college. 
+
+The module deals with common ways to interact with linux processes, which are mandatory for binary exploitation.
 
 This page contains solutions for selected challenges, some of them are actually pretty interesting. 
 
@@ -171,7 +173,7 @@ cat - | ./embryoio_level40
 ## Challenge 41
 
 The trick here is to press CTRL+D after inserting the input! \
-CTRL+D sends an EOF (not signal), which means ‘flush the input i’ve typed so far'. 
+`CTRL+D` sends an EOF (not signal), which means ‘flush the input i’ve typed so far'. 
 
 This is NOT a signal, but is implemented as a read of length 0 by the TTY driver. Its corresponding character is 0x04. 
 
