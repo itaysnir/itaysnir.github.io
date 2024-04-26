@@ -94,7 +94,7 @@ short (1 byte indicating the jump count, -128 +127) \
 near (2 bytes indicating the jump, -65536, +65535) \
 far (4 bytes indicating the jump) - Note this allows jumping to a different segment selector, aka different CS (code segment selector) value. 
 
-*Some very important stuff i’ve learned from this challenge:*
+**Some very important stuff i’ve learned from this challenge:**
 
 1. Within intel, `jmp 0xBLABLA` instruction is ALWAYS an absolute jump. \
 However, during the assembling of the instruction, it is transformed to relative jump behind the scenes. \
@@ -148,13 +148,11 @@ final:
     div rsi
 ```
 
-For unsigned division, use `div`. Make sure to zero-out `rdx` prior to this.
-
-For signed division, use `idiv`, with `cdq` prior to this. 
-
+For unsigned division, use `div`. Make sure to zero-out `rdx` prior to this. \
+For signed division, use `idiv`, with `cdq` prior to this. \
 Also note that the divisor (`rsi`) should be of the same type of the dividend (`rax`) , e.g. NOT `esi`!
 
-finally, note I’ve stored intermediate values via `eax`, and accumulated them in `rdx`. 
+Finally, note I’ve stored intermediate values via `eax`, and accumulated them in `rdx`. 
 
 ## Challenge 22
 
