@@ -1,7 +1,7 @@
 ---
 layout: post
 title:  "Pwn College - Debugging"
-date:   2024-04-26 19:59:44 +0300
+date:   2024-04-26 19:59:45 +0300
 categories: jekyll update
 ---
 
