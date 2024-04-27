@@ -302,8 +302,7 @@ syscall
 ## Challenge 13
 
 Exteremly small shellcode, 12 bytes. \
-The above works (9 bytes only). \
-The trick is to use the chmod syscall. 
+The above works (9 bytes only), The trick is to use the chmod syscall. 
 
 ## Challenge 14
 
