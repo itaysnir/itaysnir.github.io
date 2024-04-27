@@ -7,7 +7,7 @@ Hello There!
 
 I'm Itay, EE & Physics graduate from TAU, currently pursuing my CS masters at the Technion. 
 
-My research area is operating systems internals, focusing on efficient & secure DMA methods, as well as the io uring subsystem.
+My research area is operating systems internals, focusing on efficient & secure DMA methods, as well as the IO uring subsystem.
 
 My passion is low level research. \
 On my free time I mainly focus on system exploitation and vuln research.

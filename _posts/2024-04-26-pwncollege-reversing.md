@@ -10,10 +10,9 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-This module involves breaking simple RE crackmes. \ 
-It doesn't resembles real-world RE challenges at all, but there are still cool insights we can learn from here.
+This module involves breaking simple RE crackmes. 
 
-This page contains solutions for selected challenges. 
+It doesn't resembles real-world RE challenges at all, but there are still cool insights we can learn from here.  
 
 ## Tips
 
