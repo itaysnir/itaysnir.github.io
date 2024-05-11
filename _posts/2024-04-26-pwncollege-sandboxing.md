@@ -667,8 +667,7 @@ chmod +s /usr/bin/cat
 
 So that the parent would be able to trivially read the flag with high permissions!
 
-My original idea was to issue `pivot_root` on some directory, hence escaping the jail just as in the classic `chroot` escape. \
-However, there were many obstacles to this approach:
+My original idea was to issue `pivot_root` on some directory, hence escaping the jail just as in the classic `chroot` escape. However, there were many obstacles to this approach:
 
 There was no `mount` binary within the container, and the parent cannot write to the shared jail. \
 Overcomed by:
@@ -738,9 +737,8 @@ cat /flag
 
 This approach works perfectly :)
 
-Because the procfs was added, this clearly isn’t the intended solution. \
-I assume the intended solution involves using special files within the proc fs, and `/proc/parent_pid/ns/mnt` in particular. \
-The ns directory contains unix sockets of all of the namespaces of certain process. If we would re-assign the mount namespace of the container so that it would be the parent’s, it would be able to access the original filesystem! 
+Because the procfs was added, this clearly isn’t the intended solution. I assume the intended solution involves using special files within the procfs, and `/proc/parent_pid/ns/mnt` in particular. \
+The `ns` directory contains unix sockets of all of the namespaces of certain process. If we would re-assign the mount namespace of the container so that it would be the parent’s, it would be able to access the original filesystem! 
 
 We can do so by using `nsenter` - a tool that calls `setns` syscall under the hood, and switches a namespace by applying it the requested unix socket fd. \
 Hence, the intended solution:
@@ -816,8 +814,7 @@ if __name__ == '__main__':
 
 ## Challenge 18
 
-Now we can mount our chosen mountpoint, with many restrictions, and send a shellcode to be runned. \
-Because `procfs` isn't filtered, clearly the intended solution involving it. 
+Now we can mount our chosen mountpoint, with many restrictions, and send a shellcode to be runned. Because `procfs` isn't filtered, clearly the intended solution involving it. 
 
 In particular, I've used the `/proc/self/ns` directory, so that we would switch namespace the `mnt` unix socket of the parent process. We’d have to figure out what exactly the `nsenter` command does internally, and use a similar method to challenge 16. 
 
@@ -921,8 +918,8 @@ if __name__ == '__main__':
 
 My original idea was different - place `cat` binary within the home directory, and mount the home directory within the container. Using the shellcode, change the owner, group and suid permissions of the `cat` binary, so that we would be able to read the flag regulary with it!
 
-Indeed, the following exploit does changes `/home/hacker/cat` into root's suid binary. \
-Note that the challenge sets the sent mount as a read-only mount within the container. Hence, it doesn't allows changing permission bits, owners, and any attribute of any file by default. \
+Indeed, the following exploit does changes `/home/hacker/cat` into root's suid binary. Note that the challenge sets the sent mount as a read-only mount within the container. \
+Hence, it doesn't allow changing permission bits, owners, and any other attributes of any file by default. \
 By manually calling `mount("/data", "/data", "tmpfs", MS_REMOUNT|MS_BIND, 0)` within the shellcode, I've remounted the home directory mount within the container, now as writeable filesystem. 
 
 The 4th argument value stands for `0x1020` and found via `strace -X raw`. \
@@ -1007,9 +1004,9 @@ if __name__ == '__main__':
     main()
 ```
 
-Indeed, I've successfully turned `/home/hacker/cat` into root's suid! \
-However, I still couldn't read the flag. \
-Apparently, **the home directory is mounted as `nosuid`**. Therefore, the suid bit is simply ignored by default!
+Indeed, I've successfully turned `/home/hacker/cat` into root's suid! However, I still couldn't read the flag. 
+
+Apparently, **the home directory is mounted as `nosuid`**. Therefore, the suid bit is simply ignored by default (within the home partition). 
 
 
 [chroot-escapes]: https://github.com/earthquake/chw00t
