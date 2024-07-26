@@ -3,9 +3,10 @@ layout: page
 title: About
 permalink: /about/
 ---
-Hello!
+Hello There :)
 
-I'm Itay, EE & Physics graduate from TAU, currently pursuing my CS masters at the Technion. \
+I'm Itay, EE & Physics graduate from TAU, currently pursuing my CS masters at the Technion. 
+
 My academic research area is operating systems internals, focusing on efficient & secure DMA methods, as well as the Linux kernel's IO uring subsystem. \
 My passion is low level research, and binary exploitation in particular.
 

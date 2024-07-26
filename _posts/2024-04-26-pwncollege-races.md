@@ -108,7 +108,7 @@ A particular special case is **reentrancy**. Assume a signal handler is a functi
 If a single non-reentrant function is being called from a signal handler, the whole handler is considered as non-reentrant. \
 In particular, `malloc` and `free` aren’t reentrant, and therefore should be forbidden to use within signal handlers. 
 
-See `man signal-safety`. 
+See `man signal-safety`. Also see [this][gnu-signals] great post. 
 
 
 ## Challenge 1
@@ -809,3 +809,5 @@ python -c 'print("receive_message\n" * 5000000)' | nice -n -19 nc 0 1337 &> resu
 ## Challenges 10, 11
 
 Same scenario, now the race odds are lower. Same exploit works here too. 
+
+[gnu-signals]: https://www.gnu.org/software/libc/manual/html_node/Nonreentrancy.html

@@ -811,7 +811,34 @@ The next calls of `strtok` would begin at the first non-delimiter character, aft
 Note this fake-setting-of-null-bytes continues to all of the delimiters. 
 
 Also note that `strtok` tracks the current position of the input string, by using a static pointer. \
-This means that its behavior is undefined, in case it is called multiple times in the same program / within multithreaded application. 
+This means that its behavior is undefined, in case it is called multiple times in the same program / within multithreaded application. This has some terrific implications. \
+For example, consider a case of nested calls to `strtok`:
+
+```c
+int foo(char *input)
+{
+  char *dirpath = strtok(input, ":");
+  while (dirpath != NULL)
+  { 
+    do_something_with_dir(dirpath);
+    dirpath = strtok(NULL, ":");
+  }
+}
+
+int main()
+{
+  const char *input= strtok(global_buffer, "|");
+  while (input!= NULL)
+  {
+    foo(input);
+    input = strtok(NULL, "|");
+  }
+}
+```
+
+While at a first glance, such a use seems completely OK, the opposite is true. \
+In this case, after the first call of `foo`, the global static pointer was set by `foo`. Therefore, upon the preceding call to `strtok`, which sets `input` value towards the second iteration, it would use `input` as the search buffer, instead of the `global_buffer`. \
+This means the search may be performed on a completely different string than intended!
 
 It also means that 2+ contiguous delimiters are considered as a single delimiter (because right before `strtok` returns, it scans for the first non-delimiter character occurance). \
 Moreover, delimiter bytes at the start or end of the string are ignored. \
@@ -833,7 +860,8 @@ int main()
 }
 ```
 
-A correct usage with `strtok` would first copy the original string to some temp buffer, on which `strtok` would be called. 
+A correct usage with `strtok` would first copy the original string to some temp buffer, on which `strtok` would be called. `strdup` can help us to do so. \
+Moreover, we should always use `strtok_r`, in order to support nested calls.
 
 Lastly, note that this function *cannot be used on constant strings / read only memory*.
 
