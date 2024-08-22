@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "One Days - Uninitialized Data"
+title:  "1'Days Research - Uninitialized Data"
 date:   2022-11-21 20:00:01 +0300
 categories: jekyll update
 ---

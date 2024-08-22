@@ -877,3 +877,10 @@ if __name__ == '__main__':
 Notice that challenge 12 is similar to 11, but disallows `$` as a character within the payload. Hence, I've implemented the generic method to be not-dependent upon the `$` sign. \
 We can trivially leak libc, stack and PIE addresses - by just sending a large, `"%p " * 0x100` format string. \
 Writing shouldn't be hard either, as we've already implemented the generic multiple-write. All we have to adapt is moke-reading of `position` parameteres off the stack. 
+
+## Stack Snapshoting
+
+Using `$` a format string can cause stack values to be snapshotted inside `printf`.  This behavior prevents us from writing a pointer and accessing that pointer in a single `printf` call. \
+If `$` is not included in the format string, this behavior isn't trigerred. That might be good motivation for challenge 12. 
+
+TODO: write more about its internals. 

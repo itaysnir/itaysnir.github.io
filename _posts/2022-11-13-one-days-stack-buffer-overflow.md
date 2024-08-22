@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "One Days - Stack Buffer Overflows"
+title:  "1'Days Research - Stack Buffer Overflows"
 date:   2022-11-13 19:59:43 +0300
 categories: jekyll update
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "One Days - OOB Writes"
+title:  "1'Days Research - OOB Writes"
 date:   2022-11-16 20:00:01 +0300
 categories: jekyll update
 ---
