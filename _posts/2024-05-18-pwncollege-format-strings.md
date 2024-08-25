@@ -287,7 +287,11 @@ def main():
     p0.send(b'cat /flag')
     p0.interactive()
 ```
-However, aparently there's a `win` function - hence we do not need to call any libc function, making the exploit much easier:
+
+However, this approach doesn't works - due to system uses `/bin/sh -c` under the hood. Recall that by default dash drops privileges, by setting the `euid` to the `uid` of the process, prior to its execution. Hence, in case we would like to exploit this, we would have to call `setuid` first, setting all 3 `uid, saved-uid, euid` to the `euid` (which should be 0, as this is a suid binary). \
+Good to mention this behavior of dash can by avoided by supplying the `-p` flag. Hence, calling the `execve` syscall while supplying the argument `/bin/sh -p` wouldv'e worked. 
+
+However, apparently there's a `win` function - hence we do not need to call any libc function, making the exploit much easier:
 
 ```python
 def gen_write_format(offset, value, value_size):
