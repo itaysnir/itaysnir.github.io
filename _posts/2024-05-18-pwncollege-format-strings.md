@@ -884,7 +884,9 @@ Writing shouldn't be hard either, as we've already implemented the generic multi
 
 ## Stack Snapshoting
 
-Using `$` a format string can cause stack values to be snapshotted inside `printf`.  This behavior prevents us from writing a pointer and accessing that pointer in a single `printf` call. \
+Using `$` in a format string can cause stack values to be snapshotted inside `printf`.  This behavior prevents us from writing a pointer and accessing that pointer in a single `printf` call. \
 If `$` is not included in the format string, this behavior isn't trigerred. That might be good motivation for challenge 12. 
 
 TODO: write more about its internals. 
+
+Notice `pwntools` exports the option to craft exploiting format strings, even without `$`, via `fmtstr_payload`.

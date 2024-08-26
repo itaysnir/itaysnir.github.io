@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "HeapLAB 1 - Off By One"
+title:  "HeapLAB 1 - Off By One To RCE!"
 date:   2022-12-08 20:02:01 +0300
 categories: jekyll update
 ---
