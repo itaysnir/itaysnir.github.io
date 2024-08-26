@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Pwn College - File Struct Exploitation"
+title:  "Pwn College - File Stream Exploitation"
 date:   2024-05-19 19:59:45 +0300
 categories: jekyll update
 ---
@@ -11,7 +11,7 @@ categories: jekyll update
 ## Overview
 
 Recall how file descriptors work. \
-An `fd` is just an entry within the `process file table` in the kernel. The `process file table` entries contains pointers to the kernel's `global file table`, which aggregates all open files within the system. An entry within the `global file table` contains the `file struct`, as well as `inode ptr`, `offset` (where in the file we're currently accessing) and more. \
+A `fd` is just an entry within the `process file table` in the kernel. The `process file table` entries contains pointers to the kernel's `global file table`, which aggregates all open files within the system. An entry within the `global file table` contains the `file struct`, as well as `inode ptr`, `offset` (where in the file we're currently accessing) and more. \
 Every time we would issue `read, write` operations, a context switch would be performed, and all of the above dereference chain would be triggered - non trivial amount of work. 
 
 File streams are a libc optimization mechanism. The most notable API - `fopen, fread, fwrite`. Instead of working on `fd`s, they operate on file streams. \
@@ -109,6 +109,40 @@ Requirements:
 Notice - next bytes would be written right past the `write_ptr`. We would have to cause multiple writes in order to fill the buffer, and trigger the flush. 
 
 We can achieve the arbitrary read primitive by setting all pointers to `NULL`, except for the `write_base, read_end` to point towards our leak, and `write_end` to its end. \
+
+### File_plus and the vtable
+
+A very cool trick, that may be used in order to gain branch primitive. \
+`struct _IO_FILE_plus` is an extension of the traditional `struct _IO_FILE`. The only different is one extra pointer appended to the end of the struct:
+
+```c
+struct _IO_FILE_plus
+{
+  FILE file;
+  const struct _IO_jump_t *vtable;
+}
+```
+
+This `vtable` is not C++'s polymorphic vtable, but a very similar concept. This is a  bunch of function pointers in memory, that allows dynamic resolution at runtime. \
+If we would create our own fake vtable (whether on the stack on the heap), we could set at the desired offset a goal method of our wish. All we need is to overwrite the `vtable` ptr to our own fake vtable, gaining a branch primitive. 
+
+For the case of linear heap overflows, we might be needed to overwrite some parts of its `struct FILE`. \
+While we can still fake most fields, overwriting the `_IO_lock_t *_lock` member may be problematic. This is a pointer that is used in order to manage multithreaded access to file stream. We can bypass this by setting `_lock` to some **writeable** memory region, having the value of `0` (meaning, the lock isn't held). 
+
+If that's not enough, modern libc contains an extra mitigation - vtable pointer validation step. Commercially, libc stores vtables within a dedicated region to contain only vtable. For every such access into a stream's vtable, a validation would occur that the overwritten `vtable` value resides within that special region. \
+We can bypass this, by making sure our fake vtable pointer points to somewhere within that vtable area. Interestingly, as this region contains multiple vtables, we can change the vtable pointer to point to a different vtable, or even a strange offset. That way, we have control on which functions would be called, but wer'e restricted to functions within that vtable area. \
+A common function within that region is `IO_wfile_overflow`. Internally, it calls `do_allocbuf`, which uses ANOTHER vtable, but this time without any verification being made. This vtable located within `file->wide_data`. \
+The `wide_data` was created to handle wide character streams, for example unicode, and it contains fields very similar to `struct FILE`, including a vtable. 
+
+To finalize, our steps:
+
+1. Set `file.wide_data->vtable` to point to our `fake_vtable`. 
+
+2. Set `file.vtable` such that `IO_wfile_overflow` would get called. 
+
+`do_allocbuf` would now be called, which would call into `wide_data` vtable without verfication. 
+
+10:50
 
 
 ### Pwntools - FileStructure
@@ -232,8 +266,8 @@ p.interactive()
 
 ## Challenge 5
 
-We overwrite `stdout`'s file stream. \
-Notice the buffer size can be pretty small, as the libc call that actually being used isn't `fwrite` from some large buffer, but a greeting `puts` call. 
+We can now overwrite `stdout` file stream. \
+Notice the buffer size can be pretty small, as the libc call that actually being used to perform the streamed-write isn't `fwrite` from some large buffer, but a greeting `puts` call (which under the hood uses streamed-write to `stdout`). 
 
 ```python
 p = process(BINARY)
@@ -247,6 +281,8 @@ p.interactive()
 ```
 
 ## Challenge 6
+
+In a similar manner, now we'd like to exploit `stdin` file stream. 
 
 ```python
 p = process(BINARY)
