@@ -110,7 +110,7 @@ Notice - next bytes would be written right past the `write_ptr`. We would have t
 
 We can achieve the arbitrary read primitive by setting all pointers to `NULL`, except for the `write_base, read_end` to point towards our leak, and `write_end` to its end. \
 
-### File_plus and the vtable
+### File_plus and the Vtable
 
 A very cool trick, that may be used in order to gain branch primitive. \
 `struct _IO_FILE_plus` is an extension of the traditional `struct _IO_FILE`. The only different is one extra pointer appended to the end of the struct:
@@ -142,8 +142,23 @@ To finalize, our steps:
 
 `do_allocbuf` would now be called, which would call into `wide_data` vtable without verfication. 
 
-10:50
+Indeed, if we check out `fwrite` internals, we can see it calls `[vtable + 0x38]`, which stands for the virtual method `_IO_new_file_xsputn`. \
+Notice that sometimes we won't have enough controlled memory to generate fake `wide_data, file`, and their vtables. In that case, we can use overlapping structs, so we would place only the values that are being accessed, making sure they won't overlap. 
 
+### FSOP
+
+File structs are chained in a linked list, via the `_chain` member. \
+The goal behind this, is to support buffers flush at the end of the program. `stdin, stdout, stderr` would appear at the end of the list. 
+
+The act of flushing streams relies on virtual methods. \
+Moreover, streams gets flush on `exit` according to their order within the linked list. Hence, overwriting `FILE` vtables in sequence can call arbitrary sequence (such as rop gadgets). 
+
+### Angry FSROP
+
+Interesting blog post regarding the use of `angr` with `FSOP`, can be found [here][angry-fsrop]. \
+In short, the idea is to use `angr` in order to emulate the program's run, to find larger candidates for the special vtable-only space within libc. 
+
+The real brain-wrecking stuff is that some small part of the discovered chains do not rely on the fact `_wide_vtable` isn't being validated. 
 
 ### Pwntools - FileStructure
 
@@ -302,4 +317,14 @@ p.interactive()
 
 ## Challenge 7
 
+Now stuff gets interesting. \
+We'd like to overwrite the `wide_data` member of the file, in order to change control flow. 
 
+The naive plan is simple - create `FILE file` and `wide_data` by generating two separate instances of `FileStream`. \
+Then, generate `file.vtable`, making sure its entry at offset `0x38` (as this offset would be used by `fwrite`) actually overwritten to `_IO_wfile_overflow`. Also make sure the `_lock` points to a valid `NULL` value. \
+Moreover, generate `wide_data.vtable`, now having the address of `win` function within its correct offset. 
+
+So to sum up, we would fake 2 vtables and 2 `FILE` objects. For now, none of these would overlap. 
+
+
+[angry-fsrop]: https://blog.kylebot.net/2022/10/22/angry-FSROP
