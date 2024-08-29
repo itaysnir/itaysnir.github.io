@@ -10,18 +10,19 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-This module deals with file stream exploitation techniques. Overall, I found this module very good - it teaches material that isn't documented well on the internet, in a very deductive way. It also teaches some non trivial tricks, that are important to know. \
-I do think this module has potential to be much more challenging, having more complicated and realistic scenarios such as more binaries as PIE, full RELRO, no leaks at all, etc. The fact that all challenges may be solved without FSOP is abit disappointing. In particular, challenges 18-20 were all literally the same, and were solved in a trivial `wide_data` arbitrary branch primitive. \
+This module deals with file stream exploitation techniques. Overall, I found this module very good - it teaches material that isn't well documented on the internet, in a very didactic approach. It also demonstrates non trivial tricks, that are important to know. \
+I do think this module has potential to be much more challenging, having more complicated and realistic scenarios. This includes more binaries with full modern mitigations, as well as no leaks or `win` functions whatsoever. The fact that all challenges may be solved without FSOP is abit disappointing. In particular, challenges 18-20 were all literally the same, and were solved in a trivial `wide_data` corruption, yielding arbitrary branch primitive. \
 Nevertheless, it is a good module I'd recommend. 
 
 ## Background
 
 Recall how file descriptors work. \
-A `fd` is just an entry within the `process file table` in the kernel. The `process file table` entries contains pointers to the kernel's `global file table`, which aggregates all open files within the system. An entry within the `global file table` contains the `file struct`, as well as `inode ptr`, `offset` (where in the file we're currently accessing) and more. \
-Every time we would issue `read, write` operations, a context switch would be performed, and all of the above dereference chain would be triggered - non trivial amount of work. 
+A `fd` is just an entry within the process file table in the kernel. The process file table entries contains pointers to the kernel's global file table, which aggregates all open files within the system. An entry within the global file table contains the `file struct` (open file representation within the **kernel**), as well as `inode ptr`, `offset` (where in the file we're currently accessing) and more. \
+Every time we would issue `read` or `write` operations, a context switch would be performed, and all of the above dereferences chain would occur - non trivial amount of work. 
 
-File streams are a libc optimization mechanism. The most notable API - `fopen, fread, fwrite`. Instead of working on `fd`s, they operate on file streams. \
-The idea is instead of issuing lots of `read` or `write` syscalls, use an intermediate userspace buffer. This buffer is usually of fixed size (`~0x1000` bytes), allocated on the heap during the call to `fopen`. By doing so, instead of performing `read` syscall for every `0x20` bytes, we can do a single read syscall that would read `0x1000` bytes into the intermediate buffer, returning `0x20` bytes for every `fread` request. 
+File streams are a libc optimization mechanism. The most notable API - `fopen, fread, fwrite`. Instead of working on raw `fd`s, they operate on file streams. \
+The idea is to instead of issuing lots of `read` or `write` syscalls, use an intermediate userspace buffer. This buffer is usually of a fixed size (`~0x1000` bytes), allocated on the heap during the call to `fopen`. By doing so, instead of performing `read` syscall for every `0x20` bytes, we can do a single read syscall that would read `0x1000` bytes into the intermediate buffer, returning `0x20` bytes-chunks for every `fread` request. \
+In a similar manner, `fwrite` would aggregate the bytes within the intermediate buffer, and only flush them out to the underlying `fd` whenever the flush criterias are met, finalizing with a call to the `write` syscall.
 
 Part of its implementation, can be found under `struct_FILE.h`:
 

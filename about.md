@@ -13,7 +13,7 @@ My passion is low level research, and binary exploitation in particular.
 I am ranked 47th place on [pwnable.kr][pwnable-kr]. \
 You can find few of my projects at GitHub: [itaysnir][itaysnir-page]
 
-Other than computers, I really like doing [krav maga][krav-maga], classic boxing and [bachata][bachata].
+Other than computers, I really like doing [Krav maga][krav-maga], Classic Boxing and [Bachata][bachata].
 
 
 [krav-maga]: https://en.wikipedia.org/wiki/Krav_Maga
