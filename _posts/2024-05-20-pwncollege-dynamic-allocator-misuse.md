@@ -74,6 +74,89 @@ The double free gives us a strong primitive, where we can have multiple object i
 Corrupting `tcache_entry->next`. This means `malloc` would return address of our wish, upon allocation. Hence, a chunk to arbitrary address. \
 This may be very usefull primitive to leverage towards arbitrary R/W. 
 
+### Chunks and Metadata
+
+For tcache, the data region of the allocation (`user_data`) is reused for tcache metdata - `next` and `key`. It is called "in-chunk" metadata. \
+Recall the actual `chunk_addr` starts `0x10` bytes before the `mem_addr` (the address that is returned via `malloc`). \
+The metadata that resides before `user_data` are `mchunk_prev_size` and `mchunk_size` (which also includes flags). These mostly used for consolidation of chunks, and unlike the tcache metadata - resides despite of the specific cache (bin) being used. \
+Notice that `prev_size` contains a legitimate value only incase the previous chunk is freed. In case the previous chunk is allocated, it can use the `prev_size` of the next chunk as extra storage! This is an optimization for the case of an allocation with nibble of `0x8`. \
+This means that the following holds:
+
+```c
+void *a = malloc(0x10);  
+void *b = malloc(0x10);
+memset(a, 'A', 0x10);
+/*
+a->size = 0x21
+a->prev_size = 0
+b->size = 0x21
+b->prev_size = 0
+*/
+void *a = malloc(0x18);  
+void *b = malloc(0x18);
+memset(a, 'A', 0x18);
+/*
+a->size = 0x21
+a->prev_size = 0
+b->size = 0x21 
+b->prev_size = 0x4141414141414141
+*/
+```
+
+As we can see, the `size` still stands for `0x21`, as the size of the allocated chunk is exactly the same. \
+However, this time chunk `a` uses the `prev_size` of chunk `b` as extra storage - interesting optimization. The overlapping metadata is completely intended behavior of glibc heap. 
+
+### Ptmalloc Caches
+
+For `libc-2.31`, ptmalloc contains: 
+
+1. 64 singly-linked lists for tcache bins - sizes of `16` to `1032`. 
+
+2. 10 Singly linked fastbins allocations, up to `160` bytes
+
+3. 1 doubly linked unsorted bin, stashes freed chunks that don't fit to the tcache / fastbins. 
+
+4. 64 doubly-linked smallbins, up to `512` bytes.
+
+5. Doubly linked largebins, for over `512` bytes. 
+
+6. `mmap` support for large enough chunks
+
+Notice tcache completely covers the smallbins and fastbins. \
+For example, in case a chunk is moved from the unsorted bin into a largebin, it would contain corresponding metadata - `fd, bk, fd_nextsize, bk_nextsize`. 
+
+### Wilderness
+
+Upon allocation, if no adequate chunk resides within any bin, the allocator would try to allocate off the end of heap - the `top_chunk` - the wilderness, which is the last chunk that resides at the end of the heap. This is a fake chunk, that only have a `size` attribute. \
+If it failed, AND the allocation is huge - the allocator would call `mmap`. Otherwise, if there's no space but the chunk is relatively small, the allocator would call `brk` to expand the heap. 
+
+### Metadata Corruption
+
+Historical attacks (not specific to tcache) includes unsafe unlink (overwrite `fd, bk` values), poison null byte (overwrite `size` of the next chunk), house of force (overwrite `top_chunk` size, wrapping the VA space), and more. \
+Under certain scenarios, safe unlinking can be done (on an existing pointer), and posion null byte can be done. 
+
+#### House of Spirit
+
+Still unpatched. The idea is simple - forge something that looks like a chunk, `free` it, and the next `malloc` would return that chunk to us. If we can overwrite a pointer, we would be able to `malloc` into a stack pointer, for example. \
+Can be done with or without tcache (for older versions of glibc, usually the fastbins). This means the idea is to "inject" a fake chunk into the tcache. 
+
+```c
+malloc_chunk stack_chunk = { 0 };
+stack_chunk.prev_size = 0;
+stack_chunk.size = 0x21;
+free(&stack_chunk.fd);
+
+a = malloc(0x10);
+// Now a is allocated on the stack!
+```
+
+Very simple, very powerful. Can be triggered easily in case we obtain a somewhat arbitrary `free` primitive. 
+
+#### Uncooperative `malloc` Calls
+
+Sometimes the program won't contain direct `malloc` calls. In such cases, we can use `printf, scanf` and others, which uses `malloc` internally. \
+Upon debugging, we usually won't like this functionality of `printf`. We can disable it via `setbuf(stdout, NULL)`. 
+
 ## Challenge 1
 
 I've set `pwndbg` environment for all challenges from now on. Its heap commands documentation can be found [here][pwndbg-docs].
@@ -520,7 +603,7 @@ def exploit():
     p.interactive()
 ```
 
-Notice that the exploit isn't 100% reliable. This is ok, as the reason behind this is `main_ra` and `win_addr` having some additional whitespace characters. 
+Notice that the exploit isn't 100% reliable. This is ok, as the reason behind this is `main_ra` and `win_addr` sometimes having some additional whitespace characters. 
 
 ## Challenge 12
 
