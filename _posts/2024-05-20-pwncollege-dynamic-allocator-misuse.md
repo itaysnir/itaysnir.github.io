@@ -890,14 +890,8 @@ In order to demangle it, recall the mangling formula:
 ```
 
 In our case, the `ptr` is the `next` pointer value, while `&ptr` is its address - hence the chunk address. Both of them are heap addresses, hence we can bypass this mangling. \
-Also recall that the rightmost nibble of a valid `next` is always `0`.
-
-The `ptr_size` is the actual size of the pointer until null is found - for example, `0x00414243` has size of `24` bits. 
-
-```c
-key = (mangled_ptr >> (ptr_size - 12)) << 4 + (mangled_ptr & 0x000000000000000f)
-ptr = mangled_ptr ^ key
-```
+Also recall that the rightmost nibble of a valid `next` is always `0`. \
+Within my exploitation, I've wrote `demangle_ptr`, a method that decrypts a `mangled_ptr`. The idea is to utilize the fact that the 3 leftmost nibbles of the mangled pointer are the 3 leftmost nibbles of the key. Hence, this allows us to obtain the next 3 nibbles of the key by xoring the first (MSBs) 3 nibbles of the mangled pointer with the next 3 nibbles, and continue this process recursively. 
 
 This also means that if we make sure all allocations are being performed within the same heap pages, they would all use **the exact same mangling key**. \
 Hence, once obtaining a mangled pointer (that resides within the same page as the chunk it points to), we can forge arbitrary mangled next pointers within the same page. 
@@ -914,14 +908,13 @@ Another finding, is that `scanf` handler isn't trivial. Notice it performs the w
 static size_t
 musable (void *mem)
 {
-  mchunkptr p;
-  if (mem != 0)
-    {
-      p = mem2chunk (mem);
-      ...
-      else if (inuse (p))
-        return chunksize (p) - SIZE_SZ;
-    }
+  mchunkptr p = mem2chunk (mem);
+
+  if (chunk_is_mmapped (p))
+    return chunksize (p) - CHUNK_HDR_SZ;
+  else if (inuse (p))
+    return memsize (p);
+
   return 0;
 }
 
@@ -973,17 +966,21 @@ def demangle_ptr(mangled_ptr):
     ptr_size = len(mangled_ptr)
     mangled_value = mangled_ptr + b'\x00' * (8 - ptr_size)
     mangled_value = struct.unpack('<Q', mangled_value)[0]
-    ptr_size_in_bits = (len(hex(mangled_value)) - len('0x')) * 4
-    # key = (mangled_value >> (ptr_size_in_bits - 12)) << 4
-    key = (mangled_value >> 16) << 4  # TODO: check this
-    key += (mangled_value & 0x000000000000000f)
+    nibbles = textwrap.wrap(hex(mangled_value)[2:], 3)
+    key = 0
+    for nibble in nibbles[:-1]:
+        nibble_val = int(nibble, 16)
+        new_key = nibble_val ^ (key & 0xfff)
+        key = key << 12
+        key += new_key
+    
     ptr = mangled_value ^ key
 
     return ptr, key
 
 def exploit():    
+    p = process(BINARY)
     p.recvuntil(b'quit): ')
-
     secret_addr = 0x439a10
     print(f'secret_addr: {hex(secret_addr)}')
 
@@ -1017,6 +1014,50 @@ def exploit():
 ```
 
 ## Challenge 17
+
+In a similar manner to before, we have stack and pie leaks, for safe-linking compiled binary. \
+While allocating a chunk on `main_ra-8` is trivial, writing isn't - as `scanf` handler calls `malloc_usable_size`, and based on that value performs the read. \
+This means we should perform the allocation elsewhere, making sure we corrupt `size` to some adequate value. I've chose the stack address of `s1` - the input read buffer, as we can fully control its content. \
+The internals of `malloc_usable_size` is to first verify the `PREV_INUSE` of the expected next chunk is on. This can be easily aquired - all we have to do is to set large enough chunk size, so that the fake next chunk would contain LSb of 1. 
+
+Another interesting approach is by looking carefuly at the stack content. Recall we can allocate chunk everywhere on the stack, and on the pointers array specifically. This means we can fake a pointer there, hence - using the `puts` handler we would achieve arbitrary read primitive, using `free` - arbitrary free primitive, and using `scanf` - if we can make sure it have an adequate `size`, limited write primitive. \
+But arbitrary `free` is all we need - recall that upon a `free`, the corresponding bin's head is being written to the freed chunk `next` member. \
+Since we can fake the tcachebin head to anything we wish, upon freeing a chunk next (which is the target address to write at), the bin's head would be written into it! However, notice this method would only work for aligned addresses, and set garbage at the `key` offset of the fake freed-chunk. \
+Another approach we can try is overwriting the tcachebin head within the `tcache_perthread_struct`. If we would `malloc` a new chunk of that corresponding bin, we would obtain arbitrary alloc primitive, having the possibility of arbtirary write into it (as long as we set its `size` to some adequate value). \
+This means we can obtain arbitrary linear overflow, for aligned addresses. In our case it might be handy, but we have to leak the canary first. Doing so isn't trivial at all, as its LSB is 0. We can utilize the same trick as level 16, where we've exploited `malloc` side effect of writing the `next` of the tcachebin head into the perthread_struct, hence - possibly writing the canary this way.
+
+Another, this time completely wacky idea, is utilize the way allocations are being written to the pointers array:
+
+```c
+ptr[v6] = malloc(v10);
+// ASM:
+call _malloc
+mov rdx, rax
+mov eax, [rbp - 0x160h]
+mov [rbp+rax*8+ptr], rdx
+```
+
+As we've seen, we can manipulate the returned addressed by `malloc` to nearly anything, as long as it is aligned to `0x10` and dereferenceable. \
+However, we cannot easily change `ptr` value - as it is a flat array stored on the local stack frame. Hence, purely controlled by `rbp` value (which we do not directly control). \
+The key finding here is that `v6` is actually a local variable stored on the stack. If we would corrupt its value, we should obtain arbtrirary stack OOB-W - which is much more adequate for this case than a linear stack overflow (as we won't need any canary leak)! \
+An interesting finding, is while IDA parses `v6` (index for `ptr` within `malloc` handler) and `v7, v8, v9` (indices for `free, puts, scanf`) as separate variabls, they are all located at the exact same memory address, `[rbp - 0x160]`. This might mean we can manipulate the value of `v6` by messing up with some other handler..?
+
+There are few compilcations though. The first and obvious - at the start of the `malloc` handler, there's a correct boundary check regarding `v6` value. `v6` is defined as an unsigned integer, hence the comparison isn't vulnerable (the compared value is immediate, not stored in memory nor register). Second, `v6` is being overwritten for every invocation of `malloc` handler. \
+Both of these together means one thing - we cannot call the `malloc` handler twice, where the first allocation would overwrite `v6` and the second one would perform the OOB-W. The only solution is within a single `malloc` call we'd overwrite `v6`, making sure that call would return our address to-be-written. The write cannot be done by the `scanf` handler, but only via `malloc` mechanism. \
+Recall `malloc` actually writes twice - for the allocated chunk, it sets its `key` to `NULL`, and for the tcache, navigates to the tcachebin head, fetches its `next`, and writes it within the perthread_struct. This means that in order to exploit this scenario, we have to overwrite the `tcache_perthread_struct` pointer. \
+By closely debugging `malloc` implementation, I've found out the `tcache_perthread_struct` for glibc-2.40 is located at `ld` memory mapping, as it is being retrieved using the `fs` register, offset `-72`. 
+
+```bash
+0x7f115b5460d6 <malloc+54>     mov    rbx, qword ptr [rip + 0x173ccb]     RBX, [0x7f115b6b9da8] => 0xffffffffffffffb8                                                                                                                                 
+0x7f115b5460dd <malloc+61>     mov    rdx, qword ptr fs:[rbx]             RDX, [0x7f115b49e740] => 0x7f115b49e740
+
+pwndbg> fsbase
+0x7f115b49e740
+pwndbg> x/10gx 0x7f115b49e740-72
+0x7f115b49e6f8: 0x0000557085437010      0x0000000000000000
+```
+
+This means that by leaking an `ld` address, we can forge a chunk within the linker memory area, overwriting the `tcache_perthread_struct` address itself. While this may work, this approach is wayyy too wacky, and too many stuff may break within allocations. 
 
 
 
