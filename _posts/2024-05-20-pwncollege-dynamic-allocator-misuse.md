@@ -126,8 +126,15 @@ For `libc-2.31`, ptmalloc contains:
 
 6. `mmap` support for large enough chunks
 
-Notice tcache completely covers the smallbins and fastbins. \
-For example, in case a chunk is moved from the unsorted bin into a largebin, it would contain corresponding metadata - `fd, bk, fd_nextsize, bk_nextsize`. 
+Notice tcache completely covers the smallbins and fastbins. But there are 2 key differences between tcache and fastbins: 
+
+1. While every tcache bin has a finite size, the fastbins do not - and may be infinitely long. This means that in order to start populating the fastbins, all we have to do is to make the corresponding tcachebin being full. 
+
+2. The key difference - the tcache is a memory-manager mechanism specific for a thread. This means that its chunks would NEVER be reused by another thread. However, the fastbins aren't thread specific - and a same memory region may be reclaimed by multiple threads. 
+
+3. Since the tcache is thread specific, its controlling block, the `tcache_perthread_struct`, resides **within the thread's heap**. The tcache bins are also referenced by the `mp` struct, located within libc. However, for fastbins the controlling block is the thread's arena - which tracks the current fastbins heads. 
+
+The in-chunk metadata is dependent on the specific cache. For example, in case a chunk is moved from the unsorted bin into a largebin, it would contain the largebin metadata, not tcache metadata - `fd, bk, fd_nextsize, bk_nextsize`. 
 
 ### Wilderness
 
