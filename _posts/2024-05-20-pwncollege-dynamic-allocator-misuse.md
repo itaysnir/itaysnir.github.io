@@ -11,23 +11,24 @@ categories: jekyll update
 ## Overview
 
 Over the years, there were many heap exploitation techniques developed. Most of them can be found [here][heap-techniques] (there are other obscure techniques, not mentioned there). \
-This module deals with a subset of techniques, only involving the tcache. 
+This module deals with a subset of these techniques, only involving the tcache, for a modern, `glibc-2.40`. 
 
 I really liked this module. I've gained deeper understanding regarding tcache internals, and learned many new useful tricks. \
-Challenges 15+ weren't trivial, and they've required some time. The demonstrated scenarios were much more realistic than previous modules - full mitigations, no leaks, very limited primitives, etc. The fact that these latter challenges all uses safe-linking, is a huge bonus. \
-I highly recommend this module for anyone interested in modern (`glibc-2.40`) heap exploitation. 
+Challenges 15+ weren't trivial at all, and they've required learning the internals of tcache allocation process, including `tcache_perthread_struct` and its linker relation. Moreover, the demonstrated scenarios were much more realistic than previous modules - full mitigations (ASLR, NX, Full RELRO, PIE), no leaks, very limited primitives, etc. The fact that these latter challenges all uses safe-linking of a modern libc, is a huge bonus. \
+I highly recommend this module for anyone interested in modern heap exploitation. 
 
 ## Background
 
-One approach of dynamically allocating memory is `mmap`. While it does allows dynamic allocation and deallocation for regions that surivves across functions (unlike the stack), the allocation size is inflexible, and requires kernel involvment for every call. \
-A smarter solution is to write a library, that allocates a large chunk of memory (`brk`, not `mmap`, but also allocates large amout of memory), and manage the small chunks of it, based on demand. 
+### Memory Allocators
 
-Current dynamic allocator of Linux usermode is `ptmalloc2`, for its kernel - `kmalloc` (slab allocator), for FreeBSD it is `jemalloc` (which used in Android), for Windows - `Segment Heap, NT Heap`, for Chrome - `PartitionAlloc`. 
+One approach of dynamically allocating memory is `mmap`. While it does allows dynamic allocation and deallocation for regions that surivves across functions (unlike the stack), the allocation size is inflexible, and requires kernel involvment for every call. \
+A smarter solution is to write a library, that allocates a large chunk of memory (`brk`, not `mmap`, but having the same concept of large chunk allocation), and manage the small chunks allocations off it, based on demand. \
+Current dynamic allocator of userland Linux is `ptmalloc2`, for its kernel - `kmalloc` (slab allocator), for FreeBSD it is `jemalloc` (which used in Android), for Windows - `Segment Heap, NT Heap`, for Chrome - `PartitionAlloc`. 
 
 It is good to mention that the heap **HAVE NO RELATION** to the heap data structure. \
 The heap provides the basic API of `malloc, free`, as well as more fancy stuff, such as `realloc, calloc` and others (`aligned_alloc`). 
 
-Recall `ptmalloc` doesn't uses `mmap` but `brk`. \
+Recall `ptmalloc` doesn't uses `mmap` but actually `brk`. \
 `brk(addr)` expands the end of the data segment up to `addr`, while `sbrk(NULL)` returns the end, and `sbrk(delta)` increments the end by `delta` bytes. `ptmalloc` simply slices bytes off the data segment for small allocations, and uses `mmap` for very large allocations.
 
 ### Detection
@@ -185,7 +186,19 @@ Recall `PROTECT_PTR` is a reversible operation. We need 2 values - `pos` and `pt
 However, `REVEAL_PTR` is fully reversible from obfuscated pointer alone, as it uses `pos == &ptr`. Since all of this occurs within the heap, it is likely that `ptr >> 12` is roughly equivalent to `pos` itself (incase the `ptr` resides within the first page of the heap, it equals). This means that `REVEAL_PTR` is usually reversible from the mangled value, alone. \
 This means we can take a mangled value, and get back a valid heap pointer. Notice that the reason behind this, is because we assume the region where the pointer exists is identical to the pointed address region (because `next` ptr resides within a chunk on the heap, and points to another chunk on the heap). This trick wouldn't work, in case the pointer wouldv'e been stored in a different memory region than the pointed object. 
 
-Getting back to `PROTECT_PTR`, since we can actually retrieve `pos` out of a mangled pointer, this IS a reversible operation. This means that upon retrieving a mangled pointer value (any within the heap), we gain the primitive of forging a mangled pointer out of a valid pointer we own (re-mangle things before overwriting `next` ptrs). 
+Getting back to `PROTECT_PTR`, since we can actually retrieve `pos` out of a mangled pointer, this IS a reversible operation. This means that upon retrieving a mangled pointer value (any within the heap), we gain the primitive of forging a mangled pointer out of a valid pointer we own (re-mangle things before overwriting `next` ptrs). \
+By assuming both the chunk and its `next` ptr were allocted on the same page (which usually holds for small allocations), we can easily create `demangle` method. 
+
+```python
+def mangle(addr, value):
+    return (addr >> 12) ^ value
+
+def demangle(mangled):
+    o = mangle(mangled, mangled)
+    return (o >> 24) ^ o
+```
+
+Notice this script can be easily adapted to the case where the chunk and its `next` ptr aren't within the same page. 
 
 TL;DR - in case we have heap leak primitive, we can easily defeat this mitigation. 
 
