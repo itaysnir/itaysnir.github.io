@@ -817,6 +817,7 @@ set follow-fork-mode child
 b *challenge+383
 c
 '''
+context.terminal = ['/run/workspace/bin/xfce4-terminal', '-e']
 context.arch = 'amd64'
 context.encoding = 'latin'
 context.log_level = 'INFO'
