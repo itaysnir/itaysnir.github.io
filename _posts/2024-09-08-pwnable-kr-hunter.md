@@ -214,6 +214,32 @@ system(command);
 Personally I've only used vuln(4). \
 Vuln(2) can be used in addition to (4), forging a very large fake free chunk, hence - monsters would be allocated on it, overwriting any prior existing memory there. 
 
+### gen_num
+
+There's actually an OOB-read vuln within this function. Recall this method is pretty simple:
+
+```c
+char s[16]; 
+memset(s, 0, sizeof(s));
+if ( !read(0, s, 0x10u) )                     
+{
+  puts("I/O error2");
+  exit(0);
+}
+return atoi(s);  
+```
+
+If we would fill all 16-bytes of the buffer with non-null characters, `atoi` would actually read past that buffer until it would encounter a null byte - and return the whole evaluated number. This may serve as a stack leak primitive, for whatever content that resides within the stack. \
+However, for this compiled environment, the **stack canary** resides right after the `s` local buffer. Because the canary has LSB of `\x00`, the OOB-read is only 1 byte long, and it has no impact:
+
+```bash
+pwndbg> x/10gx $eax
+0xffffd0dc:     0x3131313131313131      0x3131313131313131
+0xffffd0ec:     0x08049540e8cc0d00      0xffffd1180804c052
+```
+
+If there would be other local variables, or the binary wouldv'e been compiled without canaries, this vuln would be useful. 
+
 ## Exploitation
 
 For convenient debugging, I've wrote `patch_libs.sh` and fetched `ld` and `libc` off pwnable's servers:
@@ -251,12 +277,12 @@ pwndbg> x/30wx 0x8b9d120
 
 This means that by carefully choosing the value to-be-sprayed within the monster, we can actually set the uninitialized value of `item->next`. \
 One last question resides - for every allocation that is being made off the large monster chunk, a consolidation actually happens. In particular, we can see **it leaves trails of metadata within the heap**. For example, for the very first allocation, `fd, bk` pointers of `0xeca8e7b0` are being left. Moreover, 2 `NULL` ptrs are also being written! Those `NULL`s are actually `fd_nextsize, bk_nextsize`, which are written for chunks adequate to serve the largebins. \
-Some exploitation routes may face big trouble due to that heap metadata corruption, but a clever reader shall find a way to bypass this from happening. \
+Some exploitation routes may face big trouble due to that heap metadata corruption, but a clever reader shall find a way to bypass this from happening (hint: find a way to cause allocations to be performed NOT from the largebins!). \
 Upon forging the `item->next` fake pointer, we're basically done - as we can allocate a chunk (whom first 4 bytes are fully controlled) to an arbitrary address. The only thing we have to consider, is the MASSIVE randomization that is being made - both for allocation amount, sizes, returned non-alignmented chunks, and more. Enough brute-force (~10 minutes) may solve this (and this was my approach..) but I'm sure there are better ways, probably involving the other vuln(2). 
 
 ## Control vs. Data
 
-Upon solving this challenge, I was pretty surprised that such a mediocore challenge was ranked as the hardest within pwnable (I know it sounds arrogant, yet other challenges, such as "Tiny Hard" were WAYYY more challenging for me). Therefore, I've read some other solutions within pwnable to see what am I missing. \
+Upon solving this challenge, I was pretty surprised that such a mediocre challenge was ranked as the hardest within pwnable (I know it sounds arrogant, yet other challenges, such as "Tiny Hard" were WAYYY more challenging for me). Therefore, I've read some other solutions within pwnable to see what am I missing. \
 Many (all) of them were indeed WAYYY more complicated than my approach, and only one other dude took a similar approach to my pretty-simple exploitation route. \
 I don't think my solution is any better (in fact, its working statistics are awful, if not the worst of them all). However, I do think that all of these complicated solutions had one thing in common - **control plane exploitation**, as opposed to my solution, which was a pure **data plane exploitation**. What I mean by this, is that most solutions leveraged internals of the glibc allocator, such as corrupting the various `fd, bk, size, prevsize, flags`, or metadata arena addresses, and other objects of the allocator itself. However, my solution purely based on the **program** defined `item->next` corruption, making it completely agnostic to allocator-specific details. \
 In general, I always prefer data-plane exploitation, as it is usually simpler. However, its learned techniques are very program-dependent, and not generic among different programs that uses the same allocator. \
