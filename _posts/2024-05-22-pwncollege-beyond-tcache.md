@@ -10,15 +10,15 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-This module deals with glibc exploitation past tcache: `fastbins, unsortedbins, smallbins, largebins, mmap chunks`. All challenges are based on `libc-2.35`, which is pretty modern. First 3 challenges involves basic heap shaping technqiues, while the rest of the challenges are all based on POCs from Shellphis How2Heap repo. \
-This module contains relatively advanced content, yet is mandatory for modern exploitation. Its main advantage is the opportunity of learning new, sometimes obscure, modern heap exploitation techniques. \
-In my opinion, there are 2 problems with this module:
+This module deals with glibc exploitation past tcache: `fastbins, unsortedbins, smallbins, largebins, mmap chunks`. All challenges are based on `libc-2.35`, which is pretty modern. First 3 challenges involves basic heap shaping technqiues, while the rest of the challenges are all based on POCs from Shellphish How2Heap repo. \
+This module contains relatively advanced content, and is mandatory for modern exploitation. Its main advantage is the opportunity of learning new, sometimes obscure, modern heap exploitation techniques. \
+However, in my opinion there are 2 problems with this module:
 
 1. While there were literally 30 different challenges solely involving the tcache bins (which is great), there are only 8 challenges for all other bins. I'd expect this module's size to be at least of the same size as the tcache's. 
 
 2. Disregard of data-plane exploitation. All learned techniques and challenges were intended for control-plane exploitation, hence - overwriting some control metadata of the glibc allocator. The teached methodology is abit naive: "understand the primitives, scan How2Heap, get the flag". While this may work for CTFs, most real world exploits don't work this way. Most of the time we'd exploit the behavior of the program itself (For example, corruption of a function pointer within one of the program's defined structs), not going through wrecking the heap itself (at least in a too severe manner, such as techniques that literally involves **FAKE A WHOLE ARENA**). 
 
-I do think this module is good and worth doing. Just keep in mind that it's just a small taste of how advanced heap exploitation really looks like. 
+I do think this module is good and worth doing. Just keep in mind that it's only a small taste of how advanced heap exploitation really looks like. 
 
 ## Background
 
