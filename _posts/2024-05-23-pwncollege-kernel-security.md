@@ -10,8 +10,8 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-This is the first module (currently out of 5) dealing with kernel security. The focus isn't direct exploitation, but instead generic hands-on knowledge regarding the kernel API, debugging methods, virtual to physical memory translation, user and kernel interaction and so on. \
-I find this module very good, as it teaches kernel security from the very basics, towards intermediate level. 
+This is the first module (currently, out of 5) dealing with kernel security. The focus isn't direct exploitation, but hands-on knowledge regarding the kernel API, debugging methods, virtual to physical memory translation, user and kernel interaction and so on. \
+I find this module to be very helpful, as it teaches kernel security from the basics, towards intermediate level. 
 
 ## Background
 
@@ -66,9 +66,7 @@ How can we figure out these symbols addresses? Usually there's KASLR, so they wo
 
 ### Memory Management
 
-Recall each process has the kernel code mapped in the "upper half" of memory. \
-The kernel maintains mapping between process VA, and the actual addresses they correspond to in PA.
-
+Recall each process has the kernel code mapped in the "upper half" of memory. The kernel maintains mapping between process VA, and the actual addresses they correspond to in PA. \
 Every process have its own page table, accssed by `cr3`. Nowadays, it is actually a multi-level paging structure, of 4 levels. \
 Each layer contains 512 entries, and therefore takes only `512 * 8 = 4 KB` of memory. For example, the page directory (level 2)  contains 512 pgdir entries (PDEs), each mapping a page table, where each contains 512 PTEs, each referring to a page of `0x1000` bytes. This means that the 2-level pagins system supports up to `512 * 512 * 0x1000 = 1 GB` of VA, for each process! \
 However, notice the overhead isn't small - `0x1000` bytes for the PD, and `0x1000` for each mapped `2 MB` of VA (only mapped VA allocates new PT, therefore not all maximum of 512 PTs are allocated, which is a great lazyness optimization). Theres a cool optimization - large pages, where by setting a special flag, the PDE can refer to physical address, just as a PTE, but this address is a page of `2 MB` in size. \
@@ -136,7 +134,7 @@ Moreover, notice we'd like the shellcode to exit cleanly. This means, for a func
 
 Pwn-college have developed some cool infrastructure to debug the kernel. The main component is a python script named `vm`, which wraps many repetitive operations. These includes:
 
-1. `vm connect` - initiates the kernel by running `qemu` emulator in background, then connecting to it via `ssh`. 
+- `vm connect` - initiates the kernel by running `qemu` emulator in background, then connecting to it via `ssh`. 
 
 ```python
 def start():
@@ -192,7 +190,7 @@ def start():
 We can see how it implements mounting the host user & root directories. Moreover, we can see it forwards port `22`, to enable ssh into the machine. If privileged, it also runs a `gdbserver`, and finally - stores all output within `/run/vm/vm.log`. \
 It also sets the kernel command line via `-append`, which sets an `init` file to be used. The `init` file does multiple important things, including mounting all the virtual filesystems, networking configuration, and loading all of the kernel modules under `/challenge`. 
 
-2. In a similar manner, if the vm have already been started, we can debug it as follows:
+- `vm debug` - In a similar manner, if the vm have already been started, we can debug it as follows:
 
 ```python
 def debug():
@@ -212,7 +210,7 @@ def debug():
 
 Hence, launches a simple `gdb` client. This means we can use gdb scripts to ease debugging. Moreover, by default challenges run on kernel `5.4`. 
 
-3. We can build kernel modules as follows:
+- `vm build` - We can build kernel modules as follows:
 
 ```python
 def build(path):
@@ -944,18 +942,17 @@ cleanup:
 ```
 
 
-
+## Further Reading
 
 ```bash
+https://github.com/lorenzo-stoakes/linux-mm-notes
+https://github.com/xairy/linux-kernel-exploitation
+https://zolutal.github.io/understanding-paging/
+https://www.youtube.com/playlist?list=PLMOpZvQB55bcRA5-KjvW7dVyGUarcqZuL
 https://hackmd.io/@whoisthatguy/Byk3uVB56?utm_source=preview-mode&utm_medium=rec
-
 https://ctf-wiki.mahaloz.re/pwn/linux/kernel/ret2usr/
-
+https://www.interruptlabs.co.uk/articles/pipe-buffer
 ```
-
-
-
-
 
 
 [pwnkernel]: https://github.com/pwncollege/pwnkernel/tree/main
