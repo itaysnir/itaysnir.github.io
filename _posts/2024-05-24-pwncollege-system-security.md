@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Pwn College - Kernel Security 2"
+title:  "Pwn College - System Exploitation"
 date:   2024-05-24 19:59:45 +0300
 categories: jekyll update
 ---
@@ -10,7 +10,10 @@ categories: jekyll update
 {:toc}
 ## Overview
 
-
+This module aims to be the "final boss" of the SBX, races and kernel security modules. \
+Unfortunately, I think it misses its potential **big time**. All of the challenges within this module relies on the exact same kernel vuln. While its exploitation requires somewhat sophisticated thinking, involving races, userspace interactions, and few tricks, the exact same exploitation is being applied to all challenges. The only difference between them, is how to trigger this exploit. \
+Sometimes there are canaries, sometimes certain syscalls are blocked, sometimes connections are sequal. However - all of these are userspace mitigations, requiring the old known userspace tricks. There is literally zero extra interaction with the kernel, which is a huge miss. \
+I personally think this module is 99% waste of time, and as opposed to previous modules, teaches literally nothing new. 
 
 ## Background
 
@@ -1337,7 +1340,7 @@ def gen_yancode(adjusted=False):
     flag_addr = 0
     flag_content = b'A' * 12  # Overwrite "pwn.college{"
     flag_content_addr = flag_addr + len(flag_path)
-    precise_flag_length = 41
+    precise_flag_length = 42
     max_size = 0x80
     out_file_path = b'/home/hacker/OUT\x00'
     out_file_addr = max_size
@@ -1368,11 +1371,9 @@ def gen_yancode(adjusted=False):
 
 ## Challenge 8
 
-Same as 7
+Same as 7, but this time KASLR is on. Because my previous exploit doesn't relies on kernel addresses at all, the same solution applies. \
+I assume the intended solution for these challenge was to find a kernel vuln, overwrite the `pos `of the file. Kernel leakage for this challenge can be done as I've initially described within challenge 5. 
 
-```c
-// ends with zgzW
-```
 
 [linux-kernel-labs-vma]: https://linux-kernel-labs.github.io/refs/pull/222/merge/labs/memory_mapping.html
 [litux-vma]: https://litux.nl/mirror/kerneldevelopment/0672327201/ch14lev1sec2.html
