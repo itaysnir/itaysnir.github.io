@@ -625,11 +625,7 @@ end
 r < /home/hacker/gdb_input.bin
 c
 
-### run_gdb.sh ##gL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzWgL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzW
-    gL_ghkPYSTKC-EP3QtgQ6turmB9.dBDN0wCMzgzW
-## Challenge 10
-
-#
+### run_gdb.sh 
 #!/bin/bash
 
 gdb -x /home/hacker/gdb_debug.gdb /challenge/babykernel_level8.0
