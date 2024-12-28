@@ -252,3 +252,43 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+## Calc
+
+Microsoft calculator? 
+
+```bash
+$ checksec calc
+[*] '/home/itay/projects/pwnable_tw/calc/calc'
+    Arch:       i386-32-little
+    RELRO:      Partial RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        No PIE (0x8048000)
+    Stripped:   No
+
+$ file calc
+calc: ELF 32-bit LSB executable, Intel 80386, version 1 (GNU/Linux), statically linked, for GNU/Linux 2.6.24, BuildID[sha1]=26cd6e85abb708b115d4526bcce2ea6db8a80c64, not stripped
+```
+
+The program allocates buffer of size `0x400` bytes on the stack, which shall be store the calculator expression. \
+It reads up to `0x400` bytes, one after another. Interesitngly, there's off-by-one vuln:
+
+```c
+while ( i < size && read(0, &c, 1) != -1 && c != '\n' )
+  {
+    if ( c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c > '/' && c <= '9' )
+    {
+      i_cp = i++;
+      addr[i_cp] = c;
+    }
+  }
+  addr[i] = 0;
+```
+
+While up to `0x400` bytes are read into the `0x400` bytes buffer, the last assignment of `addr[i] = 0` occurs 1 byte past the buffer's end. \
+Next, `init_pool` is called, nullifies all `101` bytes of the pool's buffer. Notice, that since the pool buffer was declared as `int[101]`, there might be alignment issues - potentially leaving uninitialized bytes. 
+
+The interesting logic occurs within `parse_expr`. It has few sus notes:
+
+1. The main loop is unbounded, as the only check being made is whether or not `expr[i]` is an operator. As long as its not the case, OOB-R would occur, eventually accessing the last `\x00` byte. At the end of the loop's body, there's a `!expr[i]` check. This means we even access `expr[i + 1]`, which is potentially 2 bytes past the end of the buffer.
