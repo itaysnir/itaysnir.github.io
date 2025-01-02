@@ -574,6 +574,11 @@ if __name__ == '__main__':
     main()
 ```
 
+After reading some other writeups, 
+apparently this solution was unique. I couldn't find any other solution that used the logical vuln of multiple `"00"`, 
+nor the generic mechanism of `pool_i` underflow using the `"%"` character (nor the other buffer's OOB). \
+Instead, most of the solutions have used the prefix-operator usage vuln, which I didn't use. 
+
 ## 3x17
 
 TODO
