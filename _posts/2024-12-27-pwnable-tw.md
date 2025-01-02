@@ -271,8 +271,8 @@ $ file calc
 calc: ELF 32-bit LSB executable, Intel 80386, version 1 (GNU/Linux), statically linked, for GNU/Linux 2.6.24, BuildID[sha1]=26cd6e85abb708b115d4526bcce2ea6db8a80c64, not stripped
 ```
 
-The program allocates buffer of size `0x400` bytes on the stack, which shall be store the calculator expression. \
-It reads up to `0x400` bytes, one after another. Interesitngly, there's off-by-one vuln:
+The program allocates buffer of size `0x400` bytes on the stack, which stores the calculator expression. \
+It reads up to `0x400` bytes, one byte at a time. Interesitngly, **there's off-by-one vuln**:
 
 ```c
 while ( i < size && read(0, &c, 1) != -1 && c != '\n' )
@@ -287,8 +287,99 @@ while ( i < size && read(0, &c, 1) != -1 && c != '\n' )
 ```
 
 While up to `0x400` bytes are read into the `0x400` bytes buffer, the last assignment of `addr[i] = 0` occurs 1 byte past the buffer's end. \
-Next, `init_pool` is called, nullifies all `101` bytes of the pool's buffer. Notice, that since the pool buffer was declared as `int[101]`, there might be alignment issues - potentially leaving uninitialized bytes. 
-
+Next, `init_pool` is called, nullifies all `101` bytes of the pool's buffer. Notice, that since the pool buffer was declared as `int[101]`, there might be alignment issues - potentially leaving uninitialized bytes. So this probably means our previous off-by-one vuln has no impact. \
 The interesting logic occurs within `parse_expr`. It has few sus notes:
 
-1. The main loop is unbounded, as the only check being made is whether or not `expr[i]` is an operator. As long as its not the case, OOB-R would occur, eventually accessing the last `\x00` byte. At the end of the loop's body, there's a `!expr[i]` check. This means we even access `expr[i + 1]`, which is potentially 2 bytes past the end of the buffer.
+1. The main loop is unbounded - it doesn't compares `i` value to `0x400`. The only check being made is whether or not `expr[i]` is an operator. As long as this is not the case, OOB-R would occur, eventually accessing the `pool` buffer. This means that if we initialize the `pool` buffer to some content, we might be able to leak it using `expr[i]`.
+
+2. Logical vuln - Upon parsing the first subexperssion (the string prior to the operator), it is being compared to the `"0"` string. However, we may supply values such as `"000"` which would pass this check. 
+
+3. `atoi` is being used, instead of `strtol`. This masks any possible number-parsing errors. 
+
+4. Negative numbers handling - there seems to be a check that the resulting parsed number is positive, yet in case of a zero / negative number - nothing is being done (yet the flow continues without any error). 
+
+5. The `pool` buffer current index is saved as its first member. Storage of the parsed number is being made solely using that index. If we can corrupt this value, for example by off-by-one of the `expr` buffer, we main obtain OOB-W using the `pool` buffer. 
+
+```C
+pool_i = (*pool)++;                     // Fetches the current pool index. The first int within the pool seems to be tracking this, sus.
+                                        // There seems to be no check regarding its value, hence - potential OOB
+pool[pool_i + 1] = parsed_num;          // Can be arbitrary large value
+```
+
+6. The `pool_i` index increments indefinetly, without any sanity check (that it doesn't passes the maximal value of `100`). This may serve as an important primitive for OOB-W.
+
+7. The check of no two consequtive operators is being made on `expr[i], expr[i+1]`. This means a clear OOB-read for `expr[i + 1]` (which can be controlled easily using the `pool` buffer).
+
+8. At the end of the loop, there's code that should handle operators precedence. The operators buffer is of size `100` bytes, yet its index can grow indefinetly. Clear OOB-RW. 
+
+9. Also regarding the operators precedence code - the code path of decrementing the index of the operators buffer seems unreachable under regular flow (unless we would set `expr[i]` to something other than an operator). 
+
+10. The `eval` function doesn't handles the case of `'%'` operator. Regardless of which operator was called, the `pool_i` index is being decremented. This means that by calling this method lots of times with the `'%'` operator, we would be able to decrement the `pool` index to some very low value. 
+
+11. At the very end of the `parse_expr` function, we call `eval` on the `pool` and operators buffers, with a decreasing order. This means we can supply large number of operators, and the `pool` index would be altered. 
+
+## Exploitation
+
+Since the only allocation that involves the heap seems to be the subexperssion parsing (where it is only being used as a "read" variable), 
+it might be challenging to exploit this challenge solely using heap corruptions. \
+Hence, I'd probably aim for stack corruptions to achieve RCE. \
+Because the binary isn't PIE, as well as partial RELRO, overwriting a GOT entry seems to be an easy way to call address of our wish. 
+
+Notice, wer'e not given with a `libc` binary, **and the binary is statically linked**. This means it won't be able to fetch during runtime extra symbols it doesn't have off libc. 
+Hence, I assume we'd like to achieve call primitive to some code within the binary itself. \
+The class symbols of `execve, system[, win(classic ctf symbol..)]` aren't imported. 
+However, the following interesting symbols are imported (the `calc` program itself doesn't have any interesting symbols for RCE):
+
+1. `mprotect` - always a yummy target
+
+2. `_dl_make_stack_executable` - good candidate
+
+3. `environ` - holds the stack address. May be useful for stack leak primitive
+
+4. Various writable `hook` functions, such as `__malloc_hook` and `dl_open_hooks`.  
+
+5. File streams - our program `fflush`'s `stdout`, it might be interesting to overwrite the `stdout` file stream (**which resides at a known data address, as the binary is statically linked**) - `_IO_2_1_stdout_`.
+
+### Controlled RW - Shellcode Memory
+
+First, we have to consider where we would place our shellcode at. 
+While the `expr` buf seems as a very limited candidate, as it only allows numeric values, 
+the `pool` buf may actually contain fully arbitrary content. \
+Since the `%` operator wasn't implemented, we can concatenate our shellcode values, 4 bytes at a time, placing `%` in between. 
+Also, notice that `pool` is a stack address.  
+
+### Stack Leakage
+
+No matter which approach we'd take, a stack leak would probably serve us. \
+Recall the program prompts the result using `pool[pool[0]]`. If we can find an interesting index, either before or after the pool within the stack, we can easily obtain such a leak. \
+The `pool` buffer is always being allocated before the `expr` buffer. The following `pool` stack layout occurs:
+
+```bash
+pwndbg> x/50wx 0xff88ce28 - 0x20
+0xff88ce08:     0xff88d3c8      0x080493f2      0xff88cfbc      0xff88ce28
+0xff88ce18:     0x00000000      0x00000000      0x00000000      0x00000000
+0xff88ce28:     0x00000000      0x00000000      0x00000000      0x00000000
+```
+
+Which means that `pool[-5]` would yield us the address of `pool` itself. \
+How can we decrement the index to a value of our wish? 
+We'd call `eval` multiple times with the `'%'` operator (such that it won't overwrite the `pool` itself). 
+Moreover, we should make sure the index doesn't increments at all - which happens in case `atoi` returns a negative number (or zero). 
+
+Therefore, the following simple expression would leak the `pool` address:
+
+```bash
+stack_leak_index = 5
+buf = (b'00' + b'%') * stack_leak_index + b'00'
+# Leaks 0xff88ce28
+```
+
+Notice we can use a similar approach, using a different offset, in order to leak the stack canary. 
+
+### Write primitive
+
+We can obtain stack-write primitive pretty naively - by using the `pool` OOB-W, 
+and writing arbitrary content to the stack. 
+
+
+
