@@ -827,7 +827,7 @@ There are many sus notes:
 
 6. Although defined with unsigned format specifier, the numbers defined as `int`s, and can be negative. 
 
-7. Within the process routine, the `size` is defined as `int`, not unsigned.
+7. Within the process routine, the `size` is defined as `int`, not unsigned. This may have critical impact, as `nums_arr[size -1]` is being accessed, possibly performing OOB BEFORE the array's start. 
 
 
 ### Exploitation
@@ -1083,10 +1083,17 @@ We can still debug without the `libc` leak, but we have to keep in mind we have 
 An example run gave me the following libc leak on the remote, `0xf76df041` (0x41 is our inserted 'A'). 
 
 
-#### Arbitrary Stack Write
+#### Stack Write
 
 The main vulnerability of this challenge seems to be the fact that we can write infinite amount of numbers to the 8-slot size array, and sort all of them. \
-This means the primitive is pretty limited - we can write any data we want into the stack, but it would get sorted, being interpreted as 4-byte uints. 
+This means the primitive is pretty limited - we can write any data we want into the stack, but it would get sorted, being interpreted as 4-byte uints. \
+The main obstacle is the fact that while we want to overwrite the return address and perform easy-win ROP (by jumping to `libc`), 
+the stack canary wrecks us. \
+There are few possible cool ideas:
+
+1. If theres a stack canary somewhere upper in the stack, such as due to some other function call, we may simply sort it to our desired slot!
+
+2. While we corrupt the outermost main's frame stack, notice the inner function that actually performs the sort, is also guarded with a stack canary - and this is the exact same canary. Hence, if we can make sure the innermost frame would get sorted, such that the inner frame's canary would be written at the outer frame's canary address, we would bypass this check. 
 
 
 ### Solution
@@ -1179,10 +1186,6 @@ def getLeaks(p):
     stack_leak = recvPointer(p)
     log.info(f'stack_leak: {hex(stack_leak)}')
     
-    # for _ in range(0x40):
-    #     leak = recvPointer(p)
-    #     log.info(f'leak: {hex(leak)}')
-
     p.recvuntil(b',How many numbers do you what to sort :')
     return libc_leak, stack_leak
 
