@@ -832,7 +832,7 @@ There are many sus notes:
 
 ### Exploitation
 
-#### Debugging
+#### Debug Environemnt
 
 Because we're given a partciular version of `libc`, we shall patch the binary to use it instead - and mimic the remote environment accurately.
 
@@ -955,25 +955,54 @@ This means that the first dword is a libc leak, and the second - a stack leak. \
 Moreover, the preceding string `"How many numbers do you what to sort :"` actually resides within the stack!.
 Hence, it seems to be copied from the .rodata segment, probably as part of the `FORTIFY_SOURCE` extra runtime checks. \
 Unfortunately, even though I've used the same `libc` version, and a matching `ld`, a similar yet different stack layout was produced.
-I assume the usage of `patchelf` have completely changed the `.rodata` segment, hence produced completely different stack state. 
-
-Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image:
+I assume the usage of `patchelf` have completely changed the `.rodata` segment, hence produced completely different stack state. \
+Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image. \
+I've wrote the following `Dockerfile`:
 
 ```bash
-sudo docker pull ubuntu:xenial@sha256:bcb8397f1390f4f0757ca06ce184f05c8ce0c7a4b5ff93f9ab029a581192917b
-sudo docker run -itd --name xenial 276b5b6b7721
-sudo docker exec -it xenial /bin/bash
+FROM ubuntu:xenial@sha256:bcb8397f1390f4f0757ca06ce184f05c8ce0c7a4b5ff93f9ab029a581192917b
+ARG id=1000
+ARG user=dubblesort
 
-sudo docker cp ./ld-2.23.so 8af7143d42fa:/lib/ld-linux.so.2
-sudo docker cp ./libc_32.so.6 8af7143d42fa:/lib/i386-linux-gnu/libc.so.6
-sudo docker cp ./dubblesort 8af7143d42fa:/root/dubblesort
+RUN apt-get update && \
+        apt-get install -y sudo binutils curl gdb gdbserver && \
+        addgroup --gid $id $user && \
+        adduser --uid $id --gid $id --disabled-password --gecos "" $user && \
+        echo '${user} ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+COPY ./ld-2.23.so /lib/ld-linux.so.2
+COPY ./libc_32.so.6 /lib/i386-linux-gnu/libc.so.6
+
+USER ${user}
+WORKDIR /home/${user}
+COPY --chown=${user}:${user} ./dubblesort /home/${user}/dubblesort
+```
+
+And built it via `sudo docker build -t ubuntu-dubblesort .` . Notice - I must've changed to `uid=1000` user. 
+Otherwise, spawned processes within the docker image were treated as root's. 
+
+After building the image, I've created and runned the container:
+
+```bash
+sudo docker run --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it --name xenial ubuntu-dubblesort
 ```
 
 That way, **we do not use patchelf at all**, hence - running the original binary, with its original libc, and an adequate `ld`! \
 Keep in mind, that the exact `ld + libc` pair must be used. Otherwise, the docker machine would be wrecked, 
-and even calls to `ls` would segfault. 
+and even calls to `ls` would segfault. \
+Notice that the docker approach requires us to also set a remote gdb server, which may be an headache. 
 
+Another alternative, is to debug on the host machine, using overwritten `ld` and `libc`:
 
+```python
+p = gdb.debug([LD, BINARY], env={"LD_PRELOAD": LIBC}, gdbscript=GDB_SCRIPT)
+```
+
+Because this is the simplest solution, and it doesn't patches the ELF at all, I've chose this route :)
+Notice that the first 4 bytes of `libc` leak were still not reproduced on local debug. 
+I assume it is related to the environment `LD_PRELOAD` being on the stack, changing some of the offsets there. 
+We can still debug without the `libc` leak, but we have to keep in mind we have to find the exact offset on the remote. \
+An example run gave me the following libc leak on the remote, `0xf76df041` (0x41 is our inserted 'A'). 
 
 
 #### Arbitrary Stack Write
