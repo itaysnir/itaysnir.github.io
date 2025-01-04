@@ -998,8 +998,86 @@ Another alternative, is to debug on the host machine, using overwritten `ld` and
 p = gdb.debug([LD, BINARY], env={"LD_PRELOAD": LIBC}, gdbscript=GDB_SCRIPT)
 ```
 
-Because this is the simplest solution, and it doesn't patches the ELF at all, I've chose this route :)
-Notice that the first 4 bytes of `libc` leak were still not reproduced on local debug. 
+Because this is the simplest solution, and it doesn't patches the ELF at all, I've chose this route :) \
+Notice that the gdb script doesn't naively works. Because we've changed the loader, the first instruction that we're 
+being breaked at, is the custom loader's entry point. Hence, at this point our binary wasn't even loaded to memory, 
+and we cannot break on `_start`:
+
+```bash
+pwndbg> info proc mappings
+process 47372
+Mapped address spaces:
+
+        Start Addr   End Addr       Size     Offset  Perms   objfile
+        0xf2bbd000 0xf2bc1000     0x4000        0x0  r--p   [vvar]
+        0xf2bc1000 0xf2bc3000     0x2000        0x0  r-xp   [vdso]
+        0xf2bc3000 0xf2be5000    0x22000        0x0  r-xp   /home/itay/projects/pwnable_tw/dubblesort/ld-2.23.so
+        0xf2be6000 0xf2be8000     0x2000    0x22000  rw-p   /home/itay/projects/pwnable_tw/dubblesort/ld-2.23.so
+        0xffb88000 0xffba9000    0x21000        0x0  rw-p   [stack]
+pwndbg> p $eip
+$1 = (void (*)()) 0xf2bc3ac0
+```
+
+Indeed, `readelf -h ./ld-2.23.so` shows that the loader's entry point is indeed `0xac0`. \
+A very cool trick we can do, in order to properly debug the binary, is to issue the following gdb script:
+
+```bash
+ni
+ni
+fin
+```
+
+By doing so, we enter the first new function frame called by the loader (which is the main routine that loads the binary),
+and by calling `fin` - we wait just after the binary was successfully loaded:
+
+```bash
+pwndbg> info proc mappings
+process 47442
+Mapped address spaces:
+
+        Start Addr   End Addr       Size     Offset  Perms   objfile
+        0xecdd6000 0xecdd7000     0x1000        0x0  rw-p
+        0xecdd7000 0xecf84000   0x1ad000        0x0  r-xp   /home/itay/projects/pwnable_tw/dubblesort/libc.so.6
+        0xecf84000 0xecf85000     0x1000   0x1ad000  ---p   /home/itay/projects/pwnable_tw/dubblesort/libc.so.6
+        0xecf85000 0xecf87000     0x2000   0x1ad000  r--p   /home/itay/projects/pwnable_tw/dubblesort/libc.so.6
+        0xecf87000 0xecf88000     0x1000   0x1af000  rw-p   /home/itay/projects/pwnable_tw/dubblesort/libc.so.6
+        0xecf88000 0xecf8d000     0x5000        0x0  rw-p
+        0xecf8d000 0xecf8e000     0x1000        0x0  r-xp   /home/itay/projects/pwnable_tw/dubblesort/dubblesort
+        0xecf8e000 0xecf8f000     0x1000        0x0  r--p   /home/itay/projects/pwnable_tw/dubblesort/dubblesort
+        0xecf8f000 0xecf90000     0x1000     0x1000  rw-p   /home/itay/projects/pwnable_tw/dubblesort/dubblesort
+        0xecf90000 0xecf94000     0x4000        0x0  r--p   [vvar]
+        0xecf94000 0xecf96000     0x2000        0x0  r-xp   [vdso]
+        0xecf96000 0xecfb8000    0x22000        0x0  r-xp   /home/itay/projects/pwnable_tw/dubblesort/ld-2.23.so
+        0xecfb8000 0xecfb9000     0x1000        0x0  rw-p
+        0xecfb9000 0xecfba000     0x1000    0x22000  r--p   /home/itay/projects/pwnable_tw/dubblesort/ld-2.23.so
+        0xecfba000 0xecfbb000     0x1000    0x23000  rw-p   /home/itay/projects/pwnable_tw/dubblesort/ld-2.23.so
+        0xffd72000 0xffd93000    0x21000        0x0  rw-p   [stack]
+```
+
+Cool, now we can put breakpoints on our program's addresses :)
+However, we haven't done yet! Because there are no binary debugging symbols, we cannot simply `bp main / _start`! 
+The trick is to break on a libc address, and `__libc_start_main` in particular, and fetch `main`'s address off the stack. \
+TL;DR : the following script would allow us to break on `main`:
+
+```bash
+GDB_SCRIPT = '''
+ni
+ni
+fin
+tb __libc_start_main
+commands
+    p/x *(int *)($esp + 4)
+    b *$1
+    c
+end
+
+c
+'''
+```
+
+
+
+Also notice that the first 4 bytes of `libc` leak were still not reproduced on local debug. 
 I assume it is related to the environment `LD_PRELOAD` being on the stack, changing some of the offsets there. 
 We can still debug without the `libc` leak, but we have to keep in mind we have to find the exact offset on the remote. \
 An example run gave me the following libc leak on the remote, `0xf76df041` (0x41 is our inserted 'A'). 
