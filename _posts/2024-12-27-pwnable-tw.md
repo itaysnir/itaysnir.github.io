@@ -933,7 +933,8 @@ An optimization for the above approach, would be to overwrite up to some other i
 In this example, if we would overwrite `0x34` bytes, we would leak stack address, 
 `0xff8e7440`, along with 2 preceding `libc` addresses. 
 Note, that doing this large overwrite is preferred, as this way there's lesser chance of one of the randomized bytes in between to be a null termination, 
-possibly truncation the output and damaging the exploit's statistics. \
+possibly truncation the output and damaging the exploit's statistics. 
+
 Interestingly, upon remote-debugging the binary, I've noticed the stack layout was completely different. 
 I've sent a single `'A'` character, and got the following:
 
@@ -956,7 +957,10 @@ Moreover, the preceding string `"How many numbers do you what to sort :"` actual
 Hence, it seems to be copied from the .rodata segment, probably as part of the `FORTIFY_SOURCE` extra runtime checks. \
 Unfortunately, even though I've used the same `libc` version, and a matching `ld`, a similar yet different stack layout was produced.
 I assume the usage of `patchelf` have completely changed the `.rodata` segment, hence produced completely different stack state. \
-Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image. \
+Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image!
+
+#### Debug Environment 2 - Docker!
+
 I've wrote the following `Dockerfile`:
 
 ```bash
@@ -990,7 +994,9 @@ sudo docker run -p 9090:9090 --rm --cap-add=SYS_PTRACE --security-opt seccomp=un
 That way, **we do not use patchelf at all**, hence - running the original binary, with its original libc, and an adequate `ld`! \
 Keep in mind, that the exact `ld + libc` pair must be used. Otherwise, the docker machine would be wrecked, 
 and even calls to `ls` would segfault. \
-Notice that the docker approach requires us to also set a remote gdb server, which may be an headache. 
+While this approach worked perfectly, and allowed debugging the container's binary from the host, pwntools didn't like it. 
+
+#### Debug Environment 3 - Pwntools + GDB scripting
 
 Another alternative, is to debug on the host machine, using overwritten `ld` and `libc`:
 
@@ -1075,13 +1081,11 @@ c
 '''
 ```
 
-
-
 Also notice that the first 4 bytes of `libc` leak were still not reproduced on local debug. 
 I assume it is related to the environment `LD_PRELOAD` being on the stack, changing some of the offsets there. 
 We can still debug without the `libc` leak, but we have to keep in mind we have to find the exact offset on the remote. \
-An example run gave me the following libc leak on the remote, `0xf76df041` (0x41 is our inserted 'A'). 
-
+Another option is to just find a different offset, and give up on the stack leak (as we probably dont even need it). \
+Indeed, I've found similar local & remote offsets, both represeting the same libc-leak address
 
 #### Stack Write
 
@@ -1095,7 +1099,7 @@ There are few possible cool ideas:
 
 2. While we corrupt the outermost main's frame stack, notice the inner function that actually performs the sort, is also guarded with a stack canary - and this is the exact same canary. Hence, if we can make sure the innermost frame would get sorted, such that the inner frame's canary would be written at the outer frame's canary address, we would bypass this check. 
 
-3. Recall the usage of a bad character, such as `'A'`, being parsed by `printf("%u")`. In that case, **the character would remain within the IO-stdin buffer, while leaving the corresponding memory untouched**. We can exploit this mechanism, such that the canary won't be overwritten, yet we would write libc addresses past it!
+3. Recall what happens when we send a bad character, such as `'A'` to `stdin`, such that it will be parsed by `printf("%u")`. In that case, **the character would remain within the IO-stdin buffer, while leaving the corresponding memory untouched**. We can exploit this mechanism, such that the canary won't be overwritten, yet we would write libc addresses past it!
 
 After some debugging, I've chose option(3), which is a very cool vuln. \
 Simply setting small ROP chain to jump back to libc, and we get a shell. 
