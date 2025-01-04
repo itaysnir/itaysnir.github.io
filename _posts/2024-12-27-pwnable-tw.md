@@ -840,9 +840,53 @@ Because we're given a partciular version of `libc`, we shall patch the binary to
 patchelf --replace-needed libc.so.6 ./libc.so.6 "./dubblesort"
 ```
 
-However, this approach didn't seem to work. 
-Hence, I've set a basic docker debugging environment to run the binary at, storing the new libc within the expected path. 
+However, this approach didn't seem to work, and the following error occured:
 
+```bash
+Inconsistency detected by ld.so: dl-call-libc-early-init.c: 37: _dl_call_libc_early_init: Assertion `sym != NULL' failed!
+```
+
+I've also tried using `LD_LIBRARY_PATH=. ./dubblesort`, as well as `LD_PRELOAD=./libc.so.6 ./dubblesort`, 
+having the exact same output. Therefore, the mismatch between `ld` and `libc` version is critical. \
+Hence, my next goal is to retireve a matching `ld.so`.
+
+The following interesting grep gave me some kind of hint:
+
+```bash
+$ strings libc.so.6  | grep "stable release"
+GNU C Library (Ubuntu GLIBC 2.23-0ubuntu5) stable release version 2.23, by Roland McGrath et al.
+```
+
+So this glibc-2.23 is expected to run on some older ubuntu machine. \
+Its official page is `https://launchpad.net/ubuntu/+source/glibc/2.23-0ubuntu5`, 
+and **it seems to be part of the `xenial` distribution.**
+Apparently there's an amazing tool - [glibc-all-in-one][glibc-all-in-one], which helps to debug & compile glibc easily. 
+
+```bash
+git clone https://github.com/matrix1001/glibc-all-in-one.git
+cd glibc-all-in-one
+./update_list
+
+mkdir debs
+mkdir -p libs/2.23-ubuntu5_i386
+cd debs
+wget https://launchpad.net/ubuntu/+source/glibc/2.23-0ubuntu5/+build/11213404/+files/libc6_2.23-0ubuntu5_i386.deb
+cd ..
+./extract debs/libc6_2.23-0ubuntu5_i386.deb libs/2.23-0ubuntu5_i386
+```
+
+Now our desired `ld.so` resides under `libs/`! Using the following `patchelf` commands, we can mimic the exact remote environment:
+
+```bash
+#!/bin/sh
+
+BINARY="./dubblesort"
+cp $BINARY "${BINARY}.bk"
+patchelf --set-interpreter ./ld-2.23.so $BINARY
+patchelf --replace-needed libc.so.6 ./libc_32.so.6 $BINARY
+```
+
+Now we can finally run the binary locally, without any errors!
 
 #### Read Primitive
 
@@ -908,8 +952,27 @@ I've sent a single `'A'` character, and got the following:
 ```
 
 This means that the first dword is a libc leak, and the second - a stack leak. \
-Moreover, the preceding string "How many numbers do you what to sort :" actually resides within the stack! 
-Hence, it seems to be copied from the .rodata segment, probably as part of the `FORTIFY_SOURCE` extra runtime checks. 
+Moreover, the preceding string `"How many numbers do you what to sort :"` actually resides within the stack!.
+Hence, it seems to be copied from the .rodata segment, probably as part of the `FORTIFY_SOURCE` extra runtime checks. \
+Unfortunately, even though I've used the same `libc` version, and a matching `ld`, a similar yet different stack layout was produced.
+I assume the usage of `patchelf` have completely changed the `.rodata` segment, hence produced completely different stack state. 
+
+Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image:
+
+```bash
+sudo docker pull ubuntu:xenial@sha256:bcb8397f1390f4f0757ca06ce184f05c8ce0c7a4b5ff93f9ab029a581192917b
+sudo docker run -itd --name xenial 276b5b6b7721
+sudo docker exec -it xenial /bin/bash
+
+sudo docker cp ./ld-2.23.so 8af7143d42fa:/lib/ld-linux.so.2
+sudo docker cp ./libc_32.so.6 8af7143d42fa:/lib/i386-linux-gnu/libc.so.6
+sudo docker cp ./dubblesort 8af7143d42fa:/root/dubblesort
+```
+
+That way, **we do not use patchelf at all**, hence - running the original binary, with its original libc, and an adequate `ld`! \
+Keep in mind, that the exact `ld + libc` pair must be used. Otherwise, the docker machine would be wrecked, 
+and even calls to `ls` would segfault. 
+
 
 
 
@@ -1038,3 +1101,4 @@ if __name__ == '__main__':
 ```
 
 [elf-start]: http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html
+[glibc-all-in-one]: https://github.com/matrix1001/glibc-all-in-one
