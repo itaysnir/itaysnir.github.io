@@ -258,7 +258,7 @@ It could be nice, however - the first 4 bytes of the fake note object are the `f
 
 I tought of 2 possible ways to overcome this:
 
-1. (bad, yet extremely cool) - do nothing. What happens in this case, is that `system("1\n")` is being called, which seems to be dangling string pointer we've entered during picking the `print` handler option. Because that handler parses this number via `atoi` (which is a dangerous function as it doesn't checks for parsing errors), I've entered malicious string instead - `atoi("1;sh")`, which **got properly parsed as `1`!!** Moreover, it did execute the secondary `sh`, however because there were non-null bytes past it (randomized bytes), they were also parsed as invalid command, making this to work at extremely low odds.
+1. (bad, yet extremely cool) - do nothing. What happens in this case, is that `system("1\n")` is being called, which seems to be dangling string pointer we've entered during picking the `print` handler option. Because that handler parses this number via `atoi` (which is a dangerous function as it doesn't checks for parsing errors), I've entered malicious string instead - `atoi("1;sh")`, which **got properly parsed as `1`!!** Moreover, `system` indeed executed the secondary `sh`, however because there were non-null bytes past it (randomized bytes), they were also parsed as invalid command, making this to work at extremely low odds.
 
 2. (good, and also cool) - Right after writing `system` address, write the raw bytes `;sh\x00` or `;sh;`. This would guranteed that while `sh` won't be able to interpret the address of `fp` as a command, the inner `sh` would get executed as expected, as it is parsed as follows: `sh -c '\xff\fe\xfc\x40;sh\x00'`. 
 
