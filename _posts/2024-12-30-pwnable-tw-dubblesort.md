@@ -25,7 +25,7 @@ dubblesort: ELF 32-bit LSB shared object, Intel 80386, version 1 (SYSV), dynamic
 
 Full mitigations 32-bit binary.
 
-### Overview
+## Overview
 
 The program asks for username, number of elements to sort, and the elements themselves. 
 It then produces an output of the sorted elements array. \
@@ -46,9 +46,9 @@ There are many sus notes:
 7. Within the process routine, the `size` is defined as `int`, not unsigned. This may have critical impact, as `nums_arr[size -1]` is being accessed, possibly performing OOB BEFORE the array's start. 
 
 
-### Exploitation
+## Exploitation
 
-#### Debug Environemnt
+### Debug Environemnt
 
 Because we're given a partciular version of `libc`, we shall patch the binary to use it instead - and mimic the remote environment accurately.
 
@@ -104,7 +104,7 @@ patchelf --replace-needed libc.so.6 ./libc_32.so.6 $BINARY
 
 Now we can finally run the binary locally, without any errors!
 
-#### Read Primitive
+### Read Primitive
 
 Because the primitive we have is linear stack overflow, we must achieve a stack read primitive. 
 Leaking `libc` and potentially the program's base address would probably also serve us within the exploitation. \
@@ -175,7 +175,7 @@ Unfortunately, even though I've used the same `libc` version, and a matching `ld
 I assume the usage of `patchelf` have completely changed the `.rodata` segment, hence produced completely different stack state. \
 Hence, my next debugging step was to setup a relevant ubuntu-xenial docker image!
 
-#### Debug Environment 2 - Docker!
+### Debug Environment 2 - Docker!
 
 I've wrote the following `Dockerfile`:
 
@@ -212,7 +212,7 @@ Keep in mind, that the exact `ld + libc` pair must be used. Otherwise, the docke
 and even calls to `ls` would segfault. \
 While this approach worked perfectly, and allowed debugging the container's binary from the host, pwntools didn't like it. 
 
-#### Debug Environment 3 - Pwntools + GDB scripting
+### Debug Environment 3 - Pwntools + GDB scripting
 
 Another alternative, is to debug on the host machine, using overwritten `ld` and `libc`:
 
@@ -303,7 +303,7 @@ We can still debug without the `libc` leak, but we have to keep in mind we have 
 Another option is to just find a different offset, and give up on the stack leak (as we probably dont even need it). \
 Indeed, I've found similar local & remote offsets, both represeting the same libc-leak address
 
-#### Stack Write
+### Stack Write
 
 The main vulnerability of this challenge seems to be the fact that we can write infinite amount of numbers to the 8-slot size array, and sort all of them. \
 This means the primitive is pretty limited - we can write any data we want into the stack, but it would get sorted, being interpreted as 4-byte uints. \
@@ -320,7 +320,7 @@ There are few possible cool ideas:
 After some debugging, I've chose option(3), which is a very cool vuln. \
 Simply setting small ROP chain to jump back to libc, and we get a shell. 
 
-### Solution
+## Solution
 
 The following script works both locally and remote :) \
 Notice that because the canary's value is randomized, it is being sorted to different addresses. 

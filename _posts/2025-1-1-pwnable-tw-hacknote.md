@@ -23,7 +23,7 @@ $ file ./hacknote
 ./hacknote: ELF 32-bit LSB executable, Intel 80386, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux.so.2, for GNU/Linux 2.6.32, BuildID[sha1]=a32de99816727a2ffa1fe5f4a324238b2d59a606, stripped
 ```
 
-### Overview
+## Overview
 
 This is a classic menu-based challenge. There are 4 options: `add_note, delete_note, print_note, exit`. \
 There are few sus notes:
@@ -46,7 +46,7 @@ There are few sus notes:
 
 9. The `print_note` handler also contains a sane sanity check regarding `index`. However, the way it actually print the note is completely wrecked - it fetches the function pointer off the note object (`*(note + 0)`), and prints the inner buffer (`*(note + 4)`). Of course, we can use it to easily leak heap pointers. 
 
-### Debug
+## Debug
 
 We're given the exact libc-32 as we had within previous challenges, such as `dubblesort`. \
 I've found a corresponding `ld.so` version using `glibc-all-in-one`, and run `patch_binary.sh`:
@@ -60,13 +60,13 @@ patchelf --set-interpreter ./ld-2.23.so $BINARY
 patchelf --replace-needed libc.so.6 ./libc_32.so.6 $BINARY
 ```
 
-### Exploitation
+## Exploitation
 
 Eventually, I'd like to read `system("/bin/sh")`. 
 The function pointer overwrite is an exact candidate, as it also receives a single argument - which is a string we control. \
 In order to overwrite a note's `fp`, we have to make sure the note is first freed, and our newly-allocated buffer falls exactly within the note's start. 
 
-### Read Primitive 
+## Read Primitive 
 
 We got exact libc version for SOME reason, so we'd probably like to jump there eventually. Hence, libc leak is a must. \
 Moreover, heap pointers might be needed during our exploitation, so we'd aim for those too. 
@@ -242,27 +242,27 @@ Notice - this glibc version supports fastbins for up to `0x40` size class. I've 
 as they won't reside with the fastbins, hence - contain `fd, bk` metadata pointers, pointing to their corresponding slot
 within the `main_arena` - which is a libc symbol! `0xf19817b0` is the leak in our example. 
 
-### Write Primitive 
+## Write Primitive 
 
 Now that we have leaks, and our heap is properly shaped, all we have to do is to free the 4'th note, 
 and allocate a new note with the exact same size. We can just overwrite one of the other note's `fp` to `system`, 
 and we get code execution. I've chose to overwrite note-1's metadata. \
 Notice we can also control the preceding bytes of the note we overwrite. 
 
-### RCE
+## RCE
 
 Now that we've written the `fp`, we get code execution by triggering the `print` handler of that note. \
 However, notice how exactly the print handler works - it actually dispatches as follows: `note->fp(note)`. 
 Hence, while we call `system`, its argument won't be a legitimate pointer to string, but to our fake note object. \
 It could be nice, however - the first 4 bytes of the fake note object are the `fp` bytes! 
 
-I tought of 2 possible ways to overcome this:
+I've thought of 2 possible ways to overcome this:
 
 1. (bad, yet extremely cool) - do nothing. What happens in this case, is that `system("1\n")` is being called, which seems to be dangling string pointer we've entered during picking the `print` handler option. Because that handler parses this number via `atoi` (which is a dangerous function as it doesn't checks for parsing errors), I've entered malicious string instead - `atoi("1;sh")`, which **got properly parsed as `1`!!** Moreover, `system` indeed executed the secondary `sh`, however because there were non-null bytes past it (randomized bytes), they were also parsed as invalid command, making this to work at extremely low odds.
 
 2. (good, and also cool) - Right after writing `system` address, write the raw bytes `;sh\x00` or `;sh;`. This would guranteed that while `sh` won't be able to interpret the address of `fp` as a command, the inner `sh` would get executed as expected, as it is parsed as follows: `sh -c '\xff\fe\xfc\x40;sh\x00'`. 
 
-### Solution
+## Solution
 
 ```python
 #!/usr/bin/python3

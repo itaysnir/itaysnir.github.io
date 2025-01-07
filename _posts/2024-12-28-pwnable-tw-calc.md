@@ -26,7 +26,7 @@ $ file calc
 calc: ELF 32-bit LSB executable, Intel 80386, version 1 (GNU/Linux), statically linked, for GNU/Linux 2.6.24, BuildID[sha1]=26cd6e85abb708b115d4526bcce2ea6db8a80c64, not stripped
 ```
 
-### Overview
+## Overview
 
 The program allocates buffer of size `0x400` bytes on the stack, which stores the calculator expression. \
 It reads up to `0x400` bytes, one byte at a time. Interesitngly, **there's off-by-one vuln**:
@@ -75,7 +75,7 @@ pool[pool_i + 1] = parsed_num;          // Can be arbitrary large value
 
 11. At the very end of the `parse_expr` function, we call `eval` on the `pool` and operators buffers, with a decreasing order. This means we can supply large number of operators, and the `pool` index would be altered. 
 
-### Exploitation
+## Exploitation
 
 Since the only allocation that involves the heap seems to be the subexperssion parsing (where it is only being used as a "read" variable), 
 it might be challenging to exploit this challenge solely using heap corruptions. \
@@ -97,7 +97,7 @@ However, the following interesting symbols are imported (the `calc` program itse
 
 5. File streams - our program `fflush`'s `stdout`, it might be interesting to overwrite the `stdout` file stream (**which resides at a known data address, as the binary is statically linked**) - `_IO_2_1_stdout_`.
 
-#### Controlled RW - Shellcode Memory
+### Controlled RW - Shellcode Memory
 
 First, we have to consider where we would place our shellcode at. 
 While the `expr` buf seems as a very limited candidate, as it only allows numeric values, 
@@ -105,7 +105,7 @@ the `pool` buf may actually contain fully arbitrary content. \
 Since the `%` operator wasn't implemented, we can concatenate our shellcode values, 4 bytes at a time, placing `%` in between. 
 Also, notice that `pool` is a stack address.  
 
-#### Stack Leakage
+### Stack Leakage
 
 No matter which approach we'd take, a stack leak would probably serve us. \
 Recall the program prompts the result using `pool[pool[0]]`. If we can find an interesting index, either before or after the pool within the stack, we can easily obtain such a leak. \
@@ -133,7 +133,7 @@ buf = (b'00' + b'%') * stack_leak_index + b'00'
 
 Notice we can use a similar approach, using a different offset, in order to leak the stack canary. 
 
-#### Write primitive
+### Write primitive
 
 We can obtain stack-write primitive pretty naively - by using the `pool` OOB-W, 
 and writing arbitrary content to the stack. \
@@ -159,7 +159,7 @@ Where we control `num1, num2`, leaked the address of `pool`,
 and can access any address by wrap-around of the 32-bit VA space. \
 This gives us a full arbitrary-write primitive!
 
-#### RCE
+### RCE
 
 Having any leak we desire, as well as a full arbtitrary write primitive, the road to RCE seems short. \
 Instead of storing our shellcode within `pool` (which gets nullified for every new expression), 
@@ -169,7 +169,7 @@ such that our shellcode would get trigerred upon program termination. \
 Lastly, we shall call `mprotect` on the stored shellcode, to enable NX. 
 We can do so by classic ROP (I hate this though). 
 
-### Solution
+## Solution
 
 The following script pops our desired RCE shell:
 
