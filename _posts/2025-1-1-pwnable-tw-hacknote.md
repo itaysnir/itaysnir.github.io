@@ -62,8 +62,8 @@ patchelf --replace-needed libc.so.6 ./libc_32.so.6 $BINARY
 
 ## Exploitation
 
-Eventually, I'd like to read `system("/bin/sh")`. 
-The function pointer overwrite is an exact candidate, as it also receives a single argument - which is a string we control. \
+Eventually, I'd to issue `system("/bin/sh")`. 
+The function pointer overwrite is an exact candidate, as it also receives a single argument - which is a pointer to a struct that we somewhat control. \
 In order to overwrite a note's `fp`, we have to make sure the note is first freed, and our newly-allocated buffer falls exactly within the note's start. 
 
 ## Read Primitive 
