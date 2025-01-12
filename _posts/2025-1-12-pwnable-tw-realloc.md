@@ -25,11 +25,11 @@ $ file ./re-alloc
 ./re-alloc: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=14ee078dfdcc34a92545f829c718d7acb853945b, for GNU/Linux 3.2.0, not stripped
 ```
 
-Finally, 64-bit binary. 
+64-bit binary. 
 
 ## Debug
 
-We're given some interesting libc-2.29 variant:
+We're given libc-2.29, which isn't too old:
 
 ```bash
 $ strings libc-9bb401974abeef59efcdd0ae35c5fc0ce63d3e7b.so | grep GNU
@@ -51,6 +51,8 @@ cd ..
 And used `patchelf` to mimic the remote environment precisely. 
 
 ## Overview
+
+Menu-based challenge. Having the options of `alloc, realloc, free, exit`.
 
 
 
