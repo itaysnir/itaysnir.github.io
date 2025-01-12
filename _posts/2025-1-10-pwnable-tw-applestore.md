@@ -120,9 +120,19 @@ However, we can still mess with data pointers.
 In particular, we can overwrite the file stream pointers. 
 These are good candidates for implementation of arbitrary write. \
 Another, better option is to mess with other data pointers, such as the frame pointer. 
-In that case, the outer frame's (`handler`) would be corrupted. 
-This is particulary interesting, as `handler` frame contains only 2 local variables: `nptr, canary`. 
-While the canary isn't being used until the main program loop's termination, the `nptr` is solely used as a parameter of `my_read`. 
+In that case, the outer frame (`handler`'s) would be corrupted. 
+This is particular interesting, as `handler`'s frame contains only 2 local variables: `nptr, canary`. 
+While the canary isn't being used until the main program loop's termination, the `nptr` is solely used as a parameter of `my_read`:
+
+```c
+char nptr[22]; 
+unsigned int v2; 
+...
+my_read(nptr, 0x15u);
+switch ( atoi(nptr) )
+{}
+```
+
 **Hence, by pivoting the outer frame's stack, we would improve our write primitive to arbitrary linear write of 0x21 bytes**
 
 ## Solution
@@ -344,5 +354,9 @@ if __name__ == '__main__':
 ```
 
 This challenge was pretty cool - both the vulnerability (stack-UAF) and the exploitation.
-It was nice increasing the write primitive from being very limited, to absolute linear write. 
-Also, I've used a cool trick, to pop a child-shell in case the produced shell runs within corrupted environment - which have made the exploit more stable. 
+
+1. It was nice improving the write primitive from being very limited, to absolute linear write. Overwriting data-pointers, such as the `ebp` and leading to stack pivot, was a cool trick.
+
+2. The weird behavior of `atoi("1;string")`, being parsed as `1`, is very powerful. 
+
+3. Because the original stack + pivot was highly corrupted, the poped'shell was very unstable. I've bypassed this using another trick - calling a child `sh` from the unstable shell.
