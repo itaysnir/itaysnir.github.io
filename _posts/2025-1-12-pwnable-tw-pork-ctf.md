@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "Pwnable.tw - Pork CTF!"
+title:  "Pork CTF!"
 date:   2025-01-12 20:59:45 +0300
 categories: jekyll update
 ---
@@ -10,7 +10,8 @@ categories: jekyll update
 {:toc}
 ## Pork CTF!
 
-Taken from: [url][pork-url].
+Recently, a friend of my have developed interesting vuln research CTF. It focuses on finding a "very hard vulnerability", that should be easy to pwn. \
+The challenge is taken from: [url][pork-url]
 
 ## Overview
 
