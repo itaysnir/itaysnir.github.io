@@ -37,7 +37,7 @@ GNU C Library (Ubuntu GLIBC 2.29-0ubuntu2) stable release version 2.29.
 Compiled by GNU CC version 8.3.0.
 ```
 
-I've install the corresponding debian package:
+I've installed the corresponding debian package:
 
 ```bash
 cd glibc-all-in-one
@@ -62,15 +62,15 @@ Menu-based challenge. Having the options of `alloc, realloc, free, exit`.
 
 4. `allocate` - verifies that the requested `index` is either `0` or `1`, and that the pointer slot within the global `heap` address isn't initialized. If that's the case, requests the `size` of the allocation (must be below `0x78`, probably to fall within the fastbins & tcache), and **performs the allocation using `realloc(NULL, size)`**. By reading the documentation, it should be equal to `malloc(size)`. What would `malloc(0)` do?
 
-5. Vuln - the returned chunk isn't initialized. Hence, it may still contain uninitialized values, if we'd send less than `size` bytes. 
+5. **Vuln - the returned chunk isn't initialized. Hence, it may still contain uninitialized values, if we'd send less than `size` bytes.** 
 
-6. Vuln - OOB-W of a single null byte. Notice that `ptr[size] = '\0'` is being issued, hence - writing a byte past the buffer's end, writing a total of `size + 1` bytes.
+6. **Vuln - OOB-W of a single null byte.** Notice that `ptr[size] = '\0'` is being issued, hence - writing a byte past the buffer's end, writing a total of `size + 1` bytes.
 
 7. `rfree` - frees the pointers using `realloc(ptr, 0)`, and nullifies the `heap` global slot to prevent UAF. Seems as there are no vulns here.
 
 8. `reallocate` - performs `realloc` of the desired size and heap slot. It then stores the return value within a global heap slot, reading the input to there. This time, without truncating the buffer with OOB-W of `\x00`. 
 
-9. Vuln - `reallocate` may receive `size == 0`, which in this case, triggers `realloc(ptr, 0) == free(ptr)`. Notice that the retval is checked to be non-NULL (where the retval in this case is actually NULL). However, in this case, the function returns before assigning the pointer within the global `heap` slot. Hence, the slot still contains the chunk's pointer, but this time - it is already freed. We can reissue the same routine, or `rfree`, to cause double-free. 
+9. **Vuln - UAF**. `reallocate` may receive `size == 0`, which in this case, triggers `realloc(ptr, 0) == free(ptr)`. Notice that the retval is checked to be non-NULL and exits if so (while the retval in this case is actually NULL). However, in this case, the function returns before assigning the pointer within the global `heap` slot. Hence, the slot still contains the chunk's pointer, but this time - it is already freed. We can reissue the same routine, or `rfree`, to cause double-free. 
 
 Indeed, while performing point (9), I've got the following error:
 
@@ -78,7 +78,7 @@ Indeed, while performing point (9), I've got the following error:
 free(): double free detected in tcache 2
 ```
 
-Meaning there's tcache enabled. 
+Which also means the tcache is enabled :)
 
 
 ## Exploitation
@@ -102,26 +102,30 @@ pwndbg> x/20gx 0x31686250
 0x316862a0:     0x0000000000000000      0x0000000000000000
 ```
 
-Such a technique is called `House of Poortho`. However, it seems to be valuable only in cases where the size isn't `0`, but we can perform a size mismatch. For example, shrunk `0x120` to `0x100`. This is not the case. \
-Another option i've tried, is to try and avoid using the tcache - and use the fastbins instead. However we're very limited, only for 2 allocations at once. Hence, it won't be trivial. 
+Such a technique is called `House of Poortho`. However, it seems to be valuable only in cases where the size isn't `0`, but we can perform a size mismatch. For example, shrunk `0x120` to `0x100`. This is not the case. 
+
+Another option i've tried, is to try and avoid using the tcache - and use the fastbins instead. However we're very limited, only for 2 allocations at once. Hence, it won't be trivial (as we have to perform at least `7` allocations to fill the whole tcachebin). 
 
 At this point I've concluded the challenge must involve the `realloc(ptr, 0)` vuln. Since `free` of this chunk seems to be causing a trap as glibc-2.29 mitigates this well, we have only one other option - calling `realloc` on the already freed chunk! 
 
-**Q: How the heck would `realloc` on a freed chunk behave?**
+**Q: How the heck would `realloc` behave on a freed chunk behave?**
 
 Well, if the size would be `0` - just as `free`, hence we'd encounter the same problem as before. \
 **However, in case the size isn't `0`, `realloc` checks if the desired requested size corresponds to the chunk's size (within the metadata), and if so - simply returns the given pointer as-is!**
-This feature is amazing - because `realloc` design doesn't considers the wrecked case of given freed ptr parameter, calling `realloc` on freed chunk with its adequate size is "no-op" - and returns its valid pointer, without touching any freelist. \
+This feature is amazing - because `realloc` design doesn't considers the wrecked case of given freed ptr as a parameter, calling `realloc` on freed chunk with its adequate size is "no-op" - and returns its valid pointer, without touching any freelist. \
 Within the challenge, it allows us to write content directly to the freed tcache chunk, **while still keeping it inside the tcache freelist**. 
 
-Next, because our overwritten chunk is the freelist's head, we'd like to perform 2 allocations. The caveat is that we only have 2 available slots. \
-If we would free our overwritten chunk, it would be the next freelist head - instead of our target fake chunk. \
-The trick is to use realloc to linearly increase the chunks, for example from size class `0x30` to `0x40`, without any memory-reallocation. 
-That way, when we would free the chunk back - it would get to the freelist head of another bin, leaving our target fake chunk at the head of its bin.
+Next, because our overwritten chunk is the freelist's head, and the target address is its `next`, we'd like to perform 2 allocations. The caveat is that we only have 2 available slots (while we have used one already). 
+If we would free our overwritten chunk, it would simply be the next freelist head - instead of our target fake chunk. \
+The trick is to use realloc to linearly increase the chunks, for example from size class `0x30` to `0x40`. That way, the chunk is treated as different size class, without performing any memory-reallocation in between. Hence - not touching any freelist.  
+That way, when we would free the chunk back - it would get to the freelist head of another bin (`0x40`), leaving our target fake chunk at the head of its bin - ready to be allocated, while having potentially 2 available slots. 
 
 ### Read Primitive
 
-Using the write primitive, simply overwrite `atoll` to `printf`, and use format specifiers to leak content off registers / stack memory. 
+Unlike most challenges, within this challenge, we obtain the read primitive using the arbitrary write primitive. 
+A perfect candidate to overwrite is a GOT entry of a function that receives one pointer parameter, potentially to a buffer we control. Hence, `atoll`. 
+Using the write primitive, simply overwrite `atoll`'s GOT to `printf`'s PLT (we have no libc leak at this point, but since the binary is PIE - PLT address is an awesome legitimate address). We can now use format specifiers to leak content off registers / stack memory. \
+I've seen register `rcx` (accessed by `%3$llu`) always contains libc address, but this method is generic - and we can leak nearly arbitrary content off the registers + stack (at any desired offset). 
 
 ## Solution
 
@@ -370,3 +374,9 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+When I've initially tried to solve this challenge, I've pretty quickly found the way to overwrite the freelist's head to target of my wish. However, the corresponding tcachebin entries count was `0`. I've spent alot of my time trying to figuring out how can I allocate my fake chunk as the tcachebin's head, while having positive count - due to the fact that I recall that **modern libc versions are also mitigating the count, making sure it is some positive value before performing the allocation** . However, It took me a while to realize that glibc-2.29 doesn't mitigates this at all - and if the head isn't `NULL` - simply performs the allocation from there. Thats the part I hated the most of this challenge - because of the only-2-allocations limitation, it is only relevant for old glibc versions. \
+Another thing I didn't like is the fact that no safe-linking was used, which is also due to old glibc exploitation. \
+I think the challenge would've been way cooler if it would run with a modern glibc version (along with `>= 3` allocations). 
+
+Nevertheless, I've learned few cool heap shaping tricks involving `realloc` specifically, which is always nice :)
