@@ -132,11 +132,11 @@ At this point I've decided there are very few options in which we can pop libc p
 
 2. Try harder to create non-tcache non-fastbin chunks. This way, upon freeing them, they would leave `fd, bk` that would point to their head within libc's main arena. But.. its hard, due to the next chunk's size checks. Because we have only 2 small allocations, we cannot forge chunks further enough to mimic the fake next chunk. 
 
-3. Use the heap arbitrary write primitive, such that the `tcache_perthread_struct` would be considered as a legitimate chunk to-be-freed, while making sure its size class `>=0x200`. 
+3. Use the heap arbitrary write primitive, such that the `tcache_perthread_struct` would be our target. That way, we can corrupt its `bins` metadata. Furthermore, It may also considered as a legitimate chunk to-be-freed, while making sure its size class `>=0x200`. That way, it would leave trails of libc pointers within the heap, as its `fd, bk` metadata. We could further corrupt them (at least partially) - potentially extending the write primitive into libc. 
 
 4. Mess with the top chunk. Exhausing it would eventually leave `fd, bk` pointers - just as a regular chunk. As mentioned, we cannot exhaust it legitimately, as we cannot make enough allocations. However, we can utilize the heap-arbitrary-write in order to overwrite its size to some very low value, hence - exhaust the top chunk. Notice that there are few mitigations regarding the top chunk, the hardest one requires it to end within a page boundary. Unfortuanately, this means we have to be able to make around ~`0x1000` bytes of allocations (as the heap is nearly empty) in order to exhaust the top chunk, and cause it to free. Because we're limited for only `2` small allocations, this probably won't work. 
 
-Out of the proposed ideas, the only viable one seems to be option (3). 
+5. Overwrite content within pages adjascent to the heap memory segment. There are none, as there's a 20-bit randomized gap between the heap and the program's data segment. Hooray.
 
-
+Out of the proposed ideas, the only viable one seems to be option (3), which is a total mess. 
 
