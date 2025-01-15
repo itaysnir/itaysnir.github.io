@@ -29,7 +29,7 @@ $ file ./re-alloc
 
 ## Debug
 
-We're given libc-2.29, which isn't too old:
+We're given libc-2.29, which is pretty old:
 
 ```bash
 $ strings libc-9bb401974abeef59efcdd0ae35c5fc0ce63d3e7b.so | grep GNU
@@ -64,7 +64,7 @@ Menu-based challenge. Having the options of `alloc, realloc, free, exit`.
 
 5. **Vuln - the returned chunk isn't initialized. Hence, it may still contain uninitialized values, if we'd send less than `size` bytes.** 
 
-6. **Vuln - OOB-W of a single null byte.** Notice that `ptr[size] = '\0'` is being issued, hence - writing a byte past the buffer's end, writing a total of `size + 1` bytes.
+6. **Vuln - OOB-W of a single null byte.** Notice that `ptr[size] = '\0'` is being issued, hence - writing a byte past the buffer's end, yielding a total of `size + 1` bytes.
 
 7. `rfree` - frees the pointers using `realloc(ptr, 0)`, and nullifies the `heap` global slot to prevent UAF. Seems as there are no vulns here.
 
@@ -375,8 +375,8 @@ if __name__ == '__main__':
     main()
 ```
 
-When I've initially tried to solve this challenge, I've pretty quickly found the way to overwrite the freelist's head to target of my wish. However, the corresponding tcachebin entries count was `0`. I've spent alot of my time trying to figuring out how can I allocate my fake chunk as the tcachebin's head, while having positive count - due to the fact that I recall that **modern libc versions are also mitigating the count, making sure it is some positive value before performing the allocation** . However, It took me a while to realize that glibc-2.29 doesn't mitigates this at all - and if the head isn't `NULL` - simply performs the allocation from there. Thats the part I hated the most of this challenge - because of the only-2-allocations limitation, it is only relevant for old glibc versions. \
-Another thing I didn't like is the fact that no safe-linking was used, which is also due to old glibc exploitation. \
+When I've initially tried to solve this challenge, I've pretty quickly found the way to overwrite the freelist's head to target of my wish. However, the corresponding tcachebin entries count was `0`. I've spent alot of my time trying to figuring out how can I allocate my fake chunk as the tcachebin's head, while having positive count - due to the fact that I've recalled **modern libc versions are also mitigating the tcachebin entries count, making sure it is some positive value, before actually performing the allocation** . However, It took me a while to realize that glibc-2.29 doesn't mitigates this at all - and if the head isn't `NULL` - simply performs the allocation from there. \
+Thats the part I hated the most of this challenge - because of the only-2-allocations limitation, it is only relevant for old glibc versions. Another thing I didn't like is the fact that no safe-linking was used, which was also due to old glibc exploitation. \
 I think the challenge would've been way cooler if it would run with a modern glibc version (along with `>= 3` allocations). 
 
-Nevertheless, I've learned few cool heap shaping tricks involving `realloc` specifically, which is always nice :)
+Nevertheless, the vuln itself is pretty realistic, and I've learned few cool heap shaping tricks involving `realloc` specifically, which is always nice :)
