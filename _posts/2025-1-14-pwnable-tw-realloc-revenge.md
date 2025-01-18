@@ -32,6 +32,43 @@ Very similar to re-alloc challenge (also same libc) - but this time, PIE and ful
 The challenge is identical to Re-alloc, but with harsher mitigations. \
 This means that as before, we have UAF, allowing us to overwrite freed chunk's metadata. 
 
+### TL;DR
+
+The idea is simple : 
+
+1. We start with an nearly-empty heap. Because there's no leak, allocate 2 tcache chunks, and partially overwrite its next's 2 LSBs in order to gain arbitrary-heap write primitive. Works at 1/16 chance due to 1 randomized nibble.
+
+2. At the start of the heap, tcache_perthread_struct resides. Hence, we'd choose the target chunk to be this chunk. 
+
+3. We'd fill the tcache.count[] array with large numbers, so it would falsely think all tcaches are populated
+
+4. The original size of the tcache chunk is 0x250 bytes. Shrink it using realloc. Because the remainder is still within the tcache range (< 0x400) but larger than fastbin (> 0x80), AND the tcache counters have been filled (7 slots is the maximal per tcache bin), the remaindering would go into the unsortedbin.
+
+5. By going into the unsortedbin, it leaves fd, bk that points to its corresponding head within the main_arena - which are libc pointers!
+
+6. Carefully pick the shrink size, such that the fd, bk would fall into some tcache.bins[] head. 
+
+7. Overwrite the LSBs of the fd, bk pointers there, so instead of pointing towards some crap main_arena address, we'd point to something we can work with - the stdout file stream (that resides at libc's data segment). Works at 1/16. 
+
+8. Now, next allocation would be from the tcachebin head, which is the corrupted libc fd pointer, hence - libc write primitive without even leaking libc!
+
+9. Overwrite stdout file stream. After reading the source (dont be lazy and do it), by setting the 3 flags ` IO_UNBUFFERED | IO_CURRENTLY_PUTTING | IO_IS_APPENDING`, we can bypass all basic sanity checks. The read pointers of the streams aren't even used in that path. Corrupt the read pointers, and set the `write_base` to lower, legitimate address. We can do so, by only overwriting its LSBs (recall `allocate` handler contains its off-by-one of a single `\x00`):
+
+```c
+if ((f->_flags & _IO_UNBUFFERED)
+      || ((f->_flags & _IO_LINE_BUF) && ch == '\n'))
+    if (_IO_do_write (f, f->_IO_write_base,
+		      f->_IO_write_ptr - f->_IO_write_base) == EOF)
+```
+
+This means that instead of LSB equals to `\xe3`, we'd set it to `\x00` - leaking many interesting bytes. The second qword is a libc pointer, cool. 
+
+10. All of the desired stages so far only requires one program-slot to remain allocated, while the other can be completely free. 
+
+11. Having libc pointer, use the other slot to perform arbitrary write, overwriting any `__realloc_hook, __free_hook` into a one gadget (or `system`, but must set `;/bin/sh\x00` string within the chunk in this case, or set the string at the head of the chunk, while allocating it `8` bytes prior to the `stdout` file stream).
+
+12. Trigger by issuing realloc (as both slots should be populated), get flag
+
 ### Write Primitive
 
 We have the exact same write primitive as before - we can freely write into chunks metadata. 
@@ -631,3 +668,14 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+For some reason, eventhough I've got a shell - the above solution didn't worked for HOURS. \
+After carefully debugging the remote machine, I've realized that I was a hardcore-potato-head, 
+as I've forgot to change the remote port to `re-alloc_revenge` instead of `re-alloc` T_T.
+
+Up to the challenge, the most important lesson I've learned is that even without any read primitive, we can still further improve our write primitive, sometimes way more than we might think. 
+The fact that we could have arbitrary heap write at 1/16 odds, and arbitrary libc write at 1/256, is pretty cool. \
+As for technical details, I've recalled few basics regarding file stream exploitation. In particular, the fact that many of the checked criterias before flushing a memory buffer to `fd` can be easily bypassed, is pretty cool. 
+Notice it is very important to read the glibc sources of the file stream implementation, as it might vary between versions. For example, I recall that modern glibc versions have extra mitigation upon stream-write, of `read_end == write_base`, which would wreck us in this challenge. \
+Another cool trick is the usage of `__hook` functions - `__realloc_hook, __free_hook` in particular, which are very handy in order to obtain arbitrary branch primitives for FULL-RELRO binaries. 
+Keep in mind we weren't necessarily had to use the `one_gadget`, but we could store `;/bin/sh` string somewhere within the chunk, and call `system`.
