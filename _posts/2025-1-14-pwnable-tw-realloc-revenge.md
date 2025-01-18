@@ -34,7 +34,8 @@ This means that as before, we have UAF, allowing us to overwrite freed chunk's m
 
 ### Write Primitive
 
-We have the exact same write primitive as before - we can freely write into chunks metadata. This gives us arbitrary-write freely. 
+We have the exact same write primitive as before - we can freely write into chunks metadata. 
+By overwriting tcache `next`, this gives us arbitrary-write freely. 
 
 ### Read Primitive
 
@@ -186,9 +187,9 @@ We just have to consider the extra overwrite we have to perform, this case withi
 Notice that even freeing the `0x250` chunk would land it into the tcachebins, as the tcache max size is `0x400` for this glibc version.
 
 *Q: Assuming we would successfully allocate a chunk overlapping the `tcache_perthread_struct` chunk (having size of `0x250`), how would realloc perform on it?* \
-*A: `realloc(ptr, 0x78)` would attempt to SHRINK it, hence - leaving a free chunk of size `0x250 - 0x80`.*
+*A: `realloc(ptr, 0x78)` would attempt to SHRINK it, hence - leaving a free chunk of size `0x250 - 0x80`. If the tcache bin of that corresponding size would be full, it would go directly to the unsortedbin.* 
 
-Interestingly, the **above chunk would fall into the unsortedbin, and won't go througt the tcache. This means it would leave libc pointers as its `fd, bk`!**
+Indeed, by corrupting the whole `counter` array of the tcache, **the above chunk falls into the unsortedbin, and doesn't goes through the tcache. This means it leaves libc pointers as its `fd, bk`!** 
 
 The following script would perform an allocation overlapping the `tcache_perthread_struct` chunk, and shrink it, such that it would leave libc pointers on the heap due to the remainder falling into the unsortedbin. 
 Also notice, that because we're overwriting the tcache struct itself, we gain infinite arbitrary-heap write primitive, without any leak.
@@ -219,8 +220,9 @@ Indeed, the heap layout post-shrinking the tcache struct:
 0x6252422a80a0  0x0000000000000000      0x0000000000000000      ................
 ```
 
-Now that we're having libc pointer on the heap, which is part of the `main_arena` of libc, we can use them to overwrite stuff within libc's data segment. \
-While the difference between the `main_arena` and `_IO_2_1_stdout_` is constant, we'd still need to brute force one byte:
+Now that we're having libc pointers on the heap, which is part of the `main_arena` of libc, we can use them to overwrite stuff within libc's data segment.
+In particular, we could land them on one of the tcachebins heads. \
+Also, while the difference between the `main_arena` and `_IO_2_1_stdout_` is constant, we'd still need to brute force one byte, as we have no libc leakage:
 
 ```bash
 unsortedbin
@@ -231,13 +233,14 @@ pwndbg> x/10gx 0x000072d375b37760
 ```
 
 As we can see, the `main_arena` is around `0x72d375b36ca0`, and the stdout file stream resides within `0x72d375b37760`. \
-One more extra nibble to brute force means `1 / 256` odds. I'm sure there is a way to spawn libc pointers within the `tcache_perthread_struct` area, without any randomization, 
-and I'll try this approach. \
+One more extra nibble to brute force means `1 / 256` odds. I'm sure there is a way to spawn libc pointers within the `tcache_perthread_struct` area without any randomization though. \
 Another problem is that by using the second allocation as a chunk that points to `stdout`, we won't be able to perform writes at any other addresses - as this chunk is un-freeable. 
 Hence, we must reuse the "tcache-chunk" to perform the write primitive. But this shouldn't be hard, as this chunk is free-able legitimately. \
 My end goal would be overwriting any `__malloc_hook, __free_hook, __realloc_hook` to one-gadget. 
 The plan is simple: use the stdout chunk for libc leak, and the other chunk for performing the write itself. \
-Recall how file streams works (TODO)
+Recall how file streams works - there's an intermediate buffer, whose addresses defined by the file stream object. 
+If we can manipulate the inner pointers, we can obtain read / write primitives. \
+For this case, we'd like to have read primitive, hence we have to mess with the "write" flow of the stream (as it writes from memory to `fd`). \
 
 The original file stream flags were `0x00000000fbad2887`. We could perform linear overwrite of the file stream, 
 but since we have no addresses leakage at this point, we would have to fake the stream object in a tricky manner. \
@@ -254,7 +257,7 @@ pwndbg> bt
 #5  0x000056fc89d9212a in _start ()
 ```
 
-Recall we're interested with flushing the internal buffer to the fd, and it should be as many bytes as we can. 
+Recall we're interested with writing the internal buffer to the fd, and it should be as many bytes as we can. 
 By reading the sources of `_IO_file_xsputn`, we can that we don't meet the "fill intermediate buffer" criterias, 
 yet we do meet the flush criterias. 
 
@@ -325,7 +328,7 @@ if (fp->_flags & _IO_IS_APPENDING)
 
 By settings the `IS_APPENDING` flag, we won't have to deal with the whole internal offset-adjustments. \
 So in total, by setting the 3 flags - `IS_APPENDING, IO_CURRENTLY_PUTTING, IO_UNBUFFERED`, and adjusting the `LSB`s of `write_base`, 
-we would be able to trigger leak, starting from our `write_base` pointer. 
+we would be able to trigger leak, starting from our overwritten (to `\x00` LSB) `write_base` pointer. 
 
 ## Solution
 
@@ -601,6 +604,7 @@ def exploit(p):
     realloc(p, 0, SMALLEST_ALLOC_SIZE, b'A', to_flush=False)
     # Stabilize shell
     p.sendline(b'sh\x00')
+    p.sendline(b'ls -la')
 
 def main_internal():
     if IS_DEBUG:
