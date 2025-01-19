@@ -32,6 +32,8 @@ Very similar to re-alloc challenge (also same libc) - but this time, PIE and ful
 The challenge is identical to Re-alloc, but with harsher mitigations. \
 This means that as before, we have UAF, allowing us to overwrite freed chunk's metadata. 
 
+## Exploitation
+
 ### TL;DR
 
 The idea is simple : 
