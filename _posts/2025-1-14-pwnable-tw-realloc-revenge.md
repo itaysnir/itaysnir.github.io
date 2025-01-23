@@ -679,5 +679,5 @@ Up to the challenge, the most important lesson I've learned is that even without
 The fact that we could have arbitrary heap write at 1/16 odds, and arbitrary libc write at 1/256, is pretty cool. \
 As for technical details, I've recalled few basics regarding file stream exploitation. In particular, the fact that many of the checked criterias before flushing a memory buffer to `fd` can be easily bypassed, is pretty cool. 
 Notice it is very important to read the glibc sources of the file stream implementation, as it might vary between versions. For example, I recall that modern glibc versions have extra mitigation upon stream-write, of `read_end == write_base`, which would wreck us in this challenge. \
-Another cool trick is the usage of `__hook` functions - `__realloc_hook, __free_hook` in particular, which are very handy in order to obtain arbitrary branch primitives for FULL-RELRO binaries. 
-Keep in mind we weren't necessarily had to use the `one_gadget`, but we could store `;/bin/sh` string somewhere within the chunk, and call `system`.
+Another cool trick is the usage of `__hook` functions - `__realloc_hook, __free_hook` in particular, which are very handy in order to obtain arbitrary branch primitives for FULL-RELRO binaries. I've also encountered other types of hooks - such as `__dl_open_hook`, but these werent' usable for this scenario. \
+Keep in mind we weren't necessarily had to use the `one_gadget`, but we could store `;/bin/sh\x00` string somewhere within the chunk, and call `system`.
