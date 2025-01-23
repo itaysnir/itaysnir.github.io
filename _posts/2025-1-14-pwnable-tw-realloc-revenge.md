@@ -54,7 +54,7 @@ The idea is simple :
 
 8. Now, next allocation would be from the tcachebin head, which is the corrupted libc fd pointer, hence - libc write primitive without even leaking libc!
 
-9. Overwrite stdout file stream. After reading the source (dont be lazy and do it), by setting the 3 flags ` IO_UNBUFFERED | IO_CURRENTLY_PUTTING | IO_IS_APPENDING`, we can bypass all basic sanity checks. The read pointers of the streams aren't even used in that path. Corrupt the read pointers, and set the `write_base` to lower, legitimate address. We can do so, by only overwriting its LSBs (recall `allocate` handler contains its off-by-one of a single `\x00`):
+9. Overwrite stdout file stream. After reading the source (dont be lazy and do it), by setting the 3 flags `IO_UNBUFFERED, IO_CURRENTLY_PUTTING,IO_IS_APPENDING`, we can bypass all basic sanity checks. The read pointers of the streams aren't even used in that path. Corrupt the read pointers, and set the `write_base` to lower, legitimate address. We can do so, by only overwriting its LSBs (recall `allocate` handler contains its off-by-one of a single `\x00`):
 
 ```c
 if ((f->_flags & _IO_UNBUFFERED)
