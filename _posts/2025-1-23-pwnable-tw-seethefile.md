@@ -55,7 +55,38 @@ The question is - how can we populate the `magicbuf` with any content we'd like?
 
 By reading glibc-2.23 sources, I've recalled that `fclose` is just another alias for `_IO_new_fclose`. 
 We have to make sure few criterias are made, in order to reach the close path. \
-For example, we have to set the `fp` such that its `lock` member is pointing to `NULL`. A cool trick we can do, instead of setting a pointer to `NULL`, is to set the `_IO_USER_LOCK` flag. 
+For example, we have to set the `fp` such that its `lock` member is pointing to `NULL`. A cool trick we can do, instead of setting a pointer to `NULL`, is to set the `_IO_USER_LOCK` flag:
+
+```c
+static inline void
+__attribute__ ((__always_inline__))
+_IO_acquire_lock_fct (_IO_FILE **p)
+{
+  _IO_FILE *fp = *p;
+  if ((fp->_flags & _IO_USER_LOCK) == 0)
+    _IO_funlockfile (fp);
+}
+```
+
+By doing so, and unsetting the `_IO_IS_FILEBUF`, we completely bypass the regular flow of close, and trigger `_IO_FINISH` instead:
+
+```c
+/* First unlink the stream.  */
+  if (fp->_IO_file_flags & _IO_IS_FILEBUF)
+    _IO_un_link ((struct _IO_FILE_plus *) fp);
+
+  _IO_acquire_lock (fp);
+  if (fp->_IO_file_flags & _IO_IS_FILEBUF)
+    status = _IO_file_close_it (fp);
+  else
+    status = fp->_flags & _IO_ERR_SEEN ? -1 : 0;
+  _IO_release_lock (fp);
+  _IO_FINISH (fp);
+
+#define _IO_FINISH(FP) JUMP1 (__finish, FP, 0)
+```
+
+Hence, by simply overwriting the `__finish` callback, we can obtain branch primitive without using the regular flow of `fclose` :)
 
 ## Solution
 
@@ -276,5 +307,7 @@ if __name__ == '__main__':
     main()
 ```
 
-Notice my solution doesn't calls `_IO_file_close_it`, but uses the finish's function pointers. 
-
+After reading few writeups, I've noted that none of them used the `/proc/self/fd/0` trick, and instead - sent restricted input via `scanf`, which was overwritten past the `fp` pointer at the `.bss`. \
+This approach only worked because the overflow isn't large, as well as that there are no other variables within the `.bss` right after `fp`. \
+Also, most solutions called `_IO_file_close_it`, which is the regular `close` path (which eventually calls `_IO_SYSCLOSE`, a macro of `fp->__close`). 
+By setting the special flag `_IO_USER_LOCK`, I've bypassed the lock check, and overwritten `__finish` instead. \
