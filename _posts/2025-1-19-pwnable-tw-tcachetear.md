@@ -357,7 +357,7 @@ In this case, the `.bss` pointers of `stdout`. This gave us a libc-write primiti
 Notice that we don't actually need a libc leakage for arbitarry write. Because we can directly write into the `.bss`, we would overwrite any LSBs of the `stdout` pointer, hence - writing to any address of libc we wish. 
 For example, writing at `__free_hook` would require overwriting 2 LSBs, hence 1 nibble brute-force (1/16) - which is very cool, as we could also pwn this without any read primitive.
 
-I'm pretty sure my solution isn't the intended one thought, as I haven't used the `info_handler` menu option at all. \
-After reading few writeups, I've seen that many solves have used the arbitrary-allocate primtiive to forge a fake chunk at `name` address, such that its size would be un-adequate to the tcachebins (`> 0x410`). 
+I'm pretty sure my solution isn't the intended one though, as I haven't used the `info_handler` menu option at all. \
+After reading few writeups, I've seen that many solvers have used the arbitrary-allocate primitive to forge a fake chunk at `name` address, such that its size wouldn't match to the tcachebins (`> 0x410`). 
 This way, upon freeing that fake chunk, it would go to the unsortedbin, leaving `fd, bk` pointers there - which may be leaked via the third menu option. \
-Still, I find my solution better, as it requires less from the program, and implements a full arbitrary-read primtive :)
+Still, I find my solution nicer, as it requires less from the program, and implements a full arbitrary-read primtive :)
