@@ -6,14 +6,12 @@ categories: jekyll update
 ---
 
 **Contents**
-
-- TOC
-  {:toc}
-
+* TOC
+{:toc}
 ## deathnote
 
 ```bash
-checksec death_note
+$ checksec death_note
 [*] '/home/itay/projects/pwnable_tw/deathnote/death_note'
     Arch:       i386-32-little
     RELRO:      Partial RELRO
@@ -46,7 +44,7 @@ LOAD:080482D8 ; ELF String Table
 LOAD:080482D8 byte_80482D8    db 0                    ; DATA XREF: LOAD:080481E8↑o
 ```
 
-3. The menu option is read via `read_int`. It ontains a vuln, as the buffer the number is read into isn't initialized. This means that `atoi` may return a value, partially based on uninitiallized bytes - potentailly leaking information. However, since we don't receive the return value (simply `Invalid choice` is being printed), it cannot serve as an information disclosure. Still, we may store there interesting buffers that would get parsed properly, such as `atoi("1;/bin/sh\x00")`.
+3. The menu option is read via `read_int`. It contains a vuln, as the buffer the number is read into isn't initialized. This means that `atoi` may return a value, partially based on uninitiallized bytes - potentailly leaking information. However, since we don't receive the return value (simply `Invalid choice` is being printed), it cannot serve as an information disclosure. Still, we may store there interesting buffers that would get parsed properly, such as `atoi("1;/bin/sh\x00")`.
 
 4. `add_note` - Reads an `int index` (up to `10` notes), and `name` string, eventually storing a copy of the `name` string into the notes array within the `.bss`. There are many suspicious notes (ba-doom-pst) within this function.
 
@@ -95,17 +93,17 @@ if ( result )
 
 We have ALOT we can play with in here.
 
-## TL;DR
+### TL;DR
 
 The general idea is simple (things get bad real quick, don't worry):
 
 1. Retrieve leaks
 
-2. Use the local stack buffers of read_int as fake chunks
+2. Use the local stack buffers of `read_int` as fake chunks
 
-3. Free the fake chunk on the stack
+3. Free the fake chunk on the stack. This would be a legitimate address during `del_note`'s frame.
 
-4. Perform allocation. It would be made off the fake chunk, hence returning a stack address.
+4. Perform allocation of the adequate size class. It would be made off the desired bin, hence returning the fake chunk, which is a stack address.
 
 5. Write shellcode on the stack
 
@@ -113,19 +111,21 @@ The general idea is simple (things get bad real quick, don't worry):
 
 However, there are many, many problems this solution has:
 
-1. Leaking env[0] address isn't sufficient, as the remote environment differs, hence causing different offsets. Moreover, there's randomization of null bytes at the top of the stack, between env[0] and envp itself. My solution was to use the read-deref primitive in order to scan the stack top-down, until we reach certain signature we can assert that is close to main's frame. Notice the read primitive doesn't crashes upon an attempt of readding a NULL ptr, which is awesome. However, at 50% chance we can crash due to a non-pointer non-NULL data resides as the first encountered element during scan. I've bypassed this by making the scan delta to be 0x20 bytes.
+0. The read primitive can only take a negative offset to the `notes` array. Initially, I've thought this means we can only utilize the read primitive to read addresses below `notes` - meaning, program (`0x804AAAA`) addresses. However, we can use integer underflow to wrap-around the VA space, and by supplying extremely large negative number, obtain read target addresses such as `0xfffffff0`.
 
-2. Also regarding the scan - due to large RTT to taiwan, I could only make ~80 requests until a timeout. Hence, I had to assume an initial offset to start scanning from, otherwise always timeout have occured. This hurts the statistics of success.
+1. Obtaining a reliable stack address isn't trivial at all. Since the read primitive is actually a read-deref, we need a chain of 3 pointers to obtain a leak. For libc, we utilize the `.rel` section, which contains pointers to GOT entries (which contains pointers to libc). Hence, leaking libc reliably. From there, we leak libc's `environ`, which points towards `env[0]`. Howeever, leaking `env[0]` address isn't sufficient, as the remote environment variables differ, hence causing different offsets. Moreover, there's randomization of null bytes at the top of the stack, between `env[0]` and `envp` itself. My solution was to use the read-deref primitive in order to scan the stack top-down, until we reach certain signature we can assert that is close to main's frame. Notice the read primitive doesn't crashes upon an attempt of reading a `NULL` ptr, which is awesome. However, at 50% chance we can crash due to a non-pointer non-NULL data, resides as the first encountered element during scan. I've bypassed this by making the scan delta to be `0x20` bytes (as the randomization is done with granularity of `0x10` bytes). 
 
-3. Since most of add_note local buffer's stack frame is polluted during the call of del_note, I had to use the stack buffers of read_int to store my fake chunk. However, because freeing small/large/unsorted chunk would trigger consolidation attempt (hence, more checks to bypass), the only adequate size class to free was the fastbins, hence a chunk of maximal size of 0x40 bytes. Upon freeing a fastbin chunk, multiple checks are made. First, the heap must be initialized - otherwise munmap is issued on the desired chunk - and fails. Moreover, In addition to alignment constraints, the next fake chunk must have an adequate size- more than 2 * SIZEOF_PTR and less than arena.system_mem == 0x21000. There are no possible offsets that meets the fake chunk's criterias. I've bypassed this by writing a heap pointer (strdup result) as the new arena.system_mem, hence creating program addresses also viable as fake next chunk size candidates (as heap addresses always larger than 0x804AAAA). There was only one such candidate, located at offset 0x18 bytes from my fake chunk.
+2. Also regarding the scan - due to large RTT to taiwan, I could only make ~80 requests until a timeout. Hence, I had to assume some initial offset to start scanning from, otherwise always timeout have occured. This hurts the statistics of success, as we may jump over the stack signature. 
 
-4. The allocation - as mentioned, my goal was to allocate the fake chunk into some GOT entry, such as strlen or puts. However, notice that the fake chunk is deallocated during del_note, where it was some legitimate address within the frame. But during add_note, the fake chunk actually overlaps with the return address and stack canary. Because of strdup, since we'd have to supply at least 8 bytes for triggering fastbins[0x18] allocation, it would always overwrite the first 2 SIZEOF_PTRs within crap printable characters, destorying the canary. I couldn't overwrite using non-printable characters, as this write is performed by strdup itself, and I couldn't perform an allocation of small (or 0) size, as I coudlnt forge a 8-byte fake chunk.
+3. Initially, I wanted to store my fake chunk within `add_note`'s local buffer, and free it within `del_note`. However, most of `add_note` local buffer's stack frame is polluted during the call of `del_note`. Hence, I had no other option but to use the stack buffers of `read_int` to store my fake chunk. However, because freeing small/large/unsorted chunk would trigger a consolidation attempt (hence, more checks to bypass), the only adequate size class to free were the fastbins, hence a chunk of maximal size of `0x40` bytes. Upon freeing a fastbin chunk, multiple checks are made. First, the heap must be initialized - otherwise `munmap` is issued on the desired chunk - and fails. Moreover, In addition to alignment constraints, the next fake chunk must have an adequate size- more than `2 * SIZEOF_PTR == 8` and less than `arena.system_mem == 0x21000`. Within the boundary of `0x40` bytes, there are no possible offsets that meets the fake chunk's criterias. I've bypassed this by writing a heap pointer (`strdup` result) as the new `arena.system_mem`, hence creating program addresses also viable as fake next chunk size candidates (as heap addresses always larger than `0x804AAAA`). There was only one such candidate, located at offset `0x18` bytes from my fake chunk.
 
-5. The only solution, was to overwrite stack_chk_fail GOT - obtaining a very funny way to redirect control flow into the stack.
+4. The allocation - as mentioned, my goal was to allocate the fake chunk into some GOT entry, such as `strlen` or `puts`. However, notice that the fake chunk is deallocated during `del_note`, where it was some legitimate address within the frame. But during `add_note`, the fake chunk **overlaps with the return address and stack canary**. Because of `strdup`, since we'd have to supply at least 12 printable bytes (causing 13 bytes allocation) for triggering `fastbins[0x18]` allocation, it would always overwrite the first `2 * SIZEOF_PTR` within crap printable characters, destorying the canary. I couldn't overwrite using non-printable characters, as this write is performed by `strdup` itself, and I couldn't perform an allocation of small (or 0) size, as I couldn't forge a 8-byte fake chunk (due to lacking fake next chunk candidates). 
 
-6. As mentioned, upon corrupting the canary and detecting it during add_note teardown, we'd jump to the stack strdup'ed buffer. This buffer must be at most 0x13 printable bytes (to trigger fastbins[0x18] allocation and at least 8). Hence, I've just used it as a stager to the real shellcode, which was placed using the name buffer of the last call. The stager isn't too fancy, but notice it must be polymorphic shellcode - as we'd like to write the bytes of a backward jump, which always contains negative-interpreted offset. (regular jmp == \xeb which doesn't passes filter. All other jmps do, such as je == \x74, but their backward offset doesn't).
+5. The only solution, was to overwrite `stack_chk_fail` GOT - obtaining a very funny way to redirect control flow into the stack.
 
-7. The idea of the polymorphic shellcode to write itself, which can only be done using a push operation. I've made few popa & pop operations to carefully increment the stack to my goal address within the shellcode, and performed a single sub operation that have guaranteed that right after the last shellcode's push, jmp shellcode instruction would be done. I've utilized the fact that due to strlen's behavior, the verification is stopped upon finding a null byte, hence placed the un-constrainted shellcode right after the jmp stager.
+6. As mentioned, upon corrupting the canary and detecting it during `add_note` teardown, we'd jump to the stack `strdup`'ed buffer. This buffer must be at most `0x13` printable bytes (`0x14` bytes total) to trigger `fastbins[0x18]` allocation. Hence, I've just used it as a stager to the real shellcode, which was placed using the `name` buffer of the last call. The stager isn't too fancy, but notice it must be polymorphic shellcode - as we'd like to write the bytes of a **backward jump**. Recall backward jumps always contains negative-interpreted offset, which is an unprintable byte. A cool note is that all jmps, such as `je == \x74`, are printable, except for `jmp == \xeb`. But anyways, all of their backward offsets doesn't passes the filter - so we must create the polymorphic shellcode. 
+
+7. The idea of the polymorphic shellcode to write itself, which can only be done using a `push` operation (as it is the only memory-write operation that is printable). I've made few `popa, pop` operations to carefully set `esp` to my goal value within the shellcode. I've stored the desired opcodes within `eax`, and performed a single `sub` operation that let me write arbitrary bytes into `eax`. Then, I've issued `push eax`, having `esp` points right after the `push eax` instruction, writing the jmp stager insutrction as the preceding bytes. I've utilized the fact that due to `strlen` behavior, the verification is truncated upon finding a null byte, hence I could place the unconstrainted shellcode right after the jmp stager.
 
 
 ### Idea 1 - Heap Shellcode
@@ -135,7 +135,7 @@ Using the OOB-Write primitive of `add_note`, overwrite the GOT entry of `exit / 
 However, after playing abit with the binary I've realized that the non-NX only applies to the stack, not the heap. 
 Hence, we'd probably like to store our shellcode somewhere on the stack.
 
-SPOILER(itay from the future): this was the official intended solution, as the remote DOES have an executable heap! 
+SPOILER(itay from the future): this was the official intended solution, as the remote DOES have an executable heap! I've rant more about this in the conclusions. 
 
 ### Idea 2 - Stack Shellcode
 
@@ -866,6 +866,78 @@ if __name__ == '__main__':
 
 ## Conclusion
 
+Right after submitting the flag, I rushed to read some writeups - as I've knew my solution was way off the intended way. \
+After I've read few writeups, I got one of the biggest facepalms I've ever had. Apparently, **THE HEAP WAS FREAKING EXECUTABLE**. \
+This means that the intended solution was to only write some backward `jmp` instruction as polymorphic printable-only shellcode - which is a kindergarden pwnable skill. 
 
-https://x.com/lucabtz_/status/1854415524555276677?t=_vblyoSfgGMVhYTvSXN_Cw&s=19
+About 30 minutes after my rage, upon drinking some tea and cooling down abit, I had to research what have I done wrong with my assumption, led me thinking the remote heap isn't executable. \
+I've started with a simple `checksec`, which had the following output:
 
+```bash
+    Stack:      Canary found
+    NX:         NX unknown - GNU_STACK missing
+    PIE:        No PIE (0x8047000)
+    Stack:      Executable
+    RWX:        Has RWX segments
+```
+
+As we can see, it clearly states that the stack is executable, there are RWX segments, and **`GNU_STACK` is missing**. By reading checksec's sources, within `nx.go` (yes, it is written with GO), I've found:
+
+```go
+func NX(name string, binary *elf.File) *nx {
+	res := nx{}
+	for _, p := range binary.Progs {
+		if p.Type == elf.PT_GNU_STACK && p.Flags&elf.PF_X == 0 {
+			res.Color = "green"
+			res.Output = "NX enabled"
+			return &res
+		}
+	}
+```
+
+This means it searches the binary's program headers for the `PT_GNU_STACK` flag, checking if it is enabled or not. \
+My machine is an ubuntu-6.8. I've opened the kernel's sources, and looked for the `PT_GNU_STACK` symbol. It is only referenced from one interesting site - `fs/binfmt_elf.c`:
+
+```c
+for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++)
+		switch (elf_ppnt->p_type) {
+		case PT_GNU_STACK:
+			if (elf_ppnt->p_flags & PF_X)
+				executable_stack = EXSTACK_ENABLE_X;
+			else
+				executable_stack = EXSTACK_DISABLE_X;
+			break;
+```
+
+Which means that if this flag is on, the variable `executable_stack` is `true`. \
+The remote machine runs on some old ubuntu-4.4. I've compared the uses of `executable_stack` on both versions, and they've seemed the same - both have served as an argument to `elf_read_implies_exec` and `setup_arg_pages` (may be irrelevant, has something to do with the interpreter loading). I've compared the implementation of these methods, on both kernels:
+
+```c
+// kernel 4.4
+/*
+ * An executable for which elf_read_implies_exec() returns TRUE will
+ * have the READ_IMPLIES_EXEC personality flag set automatically.
+ */
+#define elf_read_implies_exec(ex, executable_stack)	\
+	(executable_stack != EXSTACK_DISABLE_X)
+    
+
+// kernel 6.8
+#define elf_read_implies_exec(ex, executable_stack)	\
+	(mmap_is_ia32() && executable_stack == EXSTACK_DEFAULT)
+
+/*
+ * True on X86_32 or when emulating IA32 on X86_64
+ */
+static inline int mmap_is_ia32(void)
+{
+	return IS_ENABLED(CONFIG_X86_32) ||
+	       (IS_ENABLED(CONFIG_COMPAT) &&
+		test_thread_flag(TIF_ADDR32));
+}
+```
+
+As mentioned by the comment, for enabling executable region, `elf_read_implies_exec` must be `true`. \
+For older kernels, it solely depends on the `executable_stack`. But for modern kernels, it also checks that the kernel isn't 32 bit. This means that if the kernel is 64-bit, `PT_GNU_STACK` would only make the stack executable. Where for 32-bit kernels, it would make other segments, such as the heap, executable. 
+
+I guess I've learned an important lesson here - it may be very worthy to understand if there are important implications regarding the different remote environment, not only by userland perspective - but also by kernelspace.  In particular, very old kernels compared to newer kernels may have dramatic changes. Hence, we might want to develop our exploit within some old ubuntu docker container, which would mimic the remote environment as close as possible. 
