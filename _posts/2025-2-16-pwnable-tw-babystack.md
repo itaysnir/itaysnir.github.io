@@ -222,11 +222,17 @@ When I've thought more about this, I decided to try and perform the leak using t
 In particualr, by inspecting the content of `$rsi` on an uninitalized buffer during `strcpy`, I've seen it contains interesting pointers:
 
 ```bash
-TODO - add
+pwndbg> x/20gx $rsi
+0x7ffd511e8380: 0x000077d01c1c4642      0x00007ffd511e8550
+0x7ffd511e8390: 0x0000000000000000      0x000077d01be7a409
+0x7ffd511e83a0: 0x000000000000000e      0x000077d01c1c4620
+0x7ffd511e83b0: 0x000000000000000a      0x00005e672b601156
+0x7ffd511e83c0: 0x00007ffd511e8550      0x000077d01be7a81b
 ```
 
-In particular, within offset `0x48` there's a libc leakage. 
+In particular, within offset `0x48`, at `0x7ffd511e83c8` there's a libc leakage. 
 This means that if we'd fill the source buffer with exactly `0x48` bytes, the `strcpy` call would leak the extra `libc` pointer to our destination. \
+Notice, that we must use offset of at least `0x40` - as the OOB-read vuln only allows reading values starting from the `password` address and beyond. 
 The idea is that we only write small amount of bytes for previous leak, below `0x40` of the local `copy` buffer. 
 Hence, the uninitialized content there remains. \
 Now, we can utilize the `strncmp` vuln again, comparing bytes one by one - until we figure out the pointer value. \
@@ -531,7 +537,8 @@ if __name__ == '__main__':
 Notice, that the remote server has some very significant RTT, as it is located in taiwan (and the server seems pretty trash). 
 While the exploit takes ~1 second locally, every packet request takes about 1 second for the remote server! 
 Since we have to leak `0x10` bytes of password, `0x6` bytes of libc, `128` tries on average for each.
-This means that the whole leak phase of the exploit takes about `128 * 0x16 = 2816` seconds, or 47 minutes. \
-TBH, 1 second locally vs 47 minutes on the remote is prety sick. 
+This means that the whole leak phase of the exploit takes about `128 * 0x16 = 2816` seconds, or 47 minutes. 
+
+## Conclusion
 
 
