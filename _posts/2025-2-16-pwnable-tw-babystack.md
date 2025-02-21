@@ -238,7 +238,6 @@ Hence, the uninitialized content there remains. \
 Now, we can utilize the `strncmp` vuln again, comparing bytes one by one - until we figure out the pointer value. \
 Notice that by doing so, we've overwrote the first qword of the password with the pad bytes, and the second qword with the libc pointer leak.
 
-
 ### Solution
 
 The following solution works great locally:
@@ -534,11 +533,13 @@ if __name__ == '__main__':
     main()
 ```
 
-Notice, that the remote server has some very significant RTT, as it is located in taiwan (and the server seems pretty trash). 
-While the exploit takes ~1 second locally, every packet request takes about 1 second for the remote server! 
-Since we have to leak `0x10` bytes of password, `0x6` bytes of libc, `128` tries on average for each.
-This means that the whole leak phase of the exploit takes about `128 * 0x16 = 2816` seconds, or 47 minutes. 
+Notice, that the remote server has some very significant RTT, as it is located in Taiwan (and the server seems pretty trash). \
+While the exploit takes `~1` second locally, every packet request takes about 1 second for the remote server! 
+We have to leak `0x10` bytes of password and `0x6` bytes of libc, `128` tries on average for each.
+This means that (at least from Israel) the whole leak phase of the remote exploit takes about `128 * 0x16 = 2816` seconds, or 47 minutes. Wew. 
 
 ## Conclusion
 
-
+This challenge was cool. \
+Besides being pretty real world - 64-bit with all mitigations enabled, it had very realistic vulns, utilizing subtle bugs of uninitialized local buffers. 
+In particular, obtaining read primitive solely via the `strncmp` OOB-R was cool. 
