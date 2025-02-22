@@ -6,10 +6,8 @@ categories: jekyll update
 ---
 
 **Contents**
-
-- TOC
-  {:toc}
-
+* TOC
+{:toc}
 ## Overview
 
 Up to ARMv7, only ARM32 instruction set was supported. It was based on ARMV7-A profile, used mostly in mobile devices and embedded.
