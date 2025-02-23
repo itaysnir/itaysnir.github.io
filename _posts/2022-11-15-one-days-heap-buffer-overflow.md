@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "1'Days Research - Heap Buffer Overflows"
+title:  "1-Day Research - Heap Buffer Overflows"
 date:   2022-11-15 19:59:43 +0300
 categories: jekyll update
 ---

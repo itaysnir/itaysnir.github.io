@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "1'Days Research - Misc Integer Issues"
+title:  "1-Day Research - Misc Integer Issues"
 date:   2022-11-20 20:00:01 +0300
 categories: jekyll update
 ---

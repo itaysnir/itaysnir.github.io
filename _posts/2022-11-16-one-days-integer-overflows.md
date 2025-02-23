@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "1'Days Research - Integer Overflows"
+title:  "1-Day Research - Integer Overflows"
 date:   2022-11-18 20:00:01 +0300
 categories: jekyll update
 ---
