@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "1'Days Research - In-The-Wild Vulns"
+title:  "1-Day Research - In-The-Wild Vulns"
 date:   2022-11-22 19:59:43 +0300
 categories: jekyll update
 ---
