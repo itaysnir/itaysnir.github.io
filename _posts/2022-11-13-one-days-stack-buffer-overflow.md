@@ -1123,6 +1123,26 @@ sprintf(filename, "%s/%s", basePath, metadata->decompressedFileName);
 None
 
 
+## CVE-2018-9318
+
+### Code
+
+```c
+while ( inx < XML_Signature_BufSize)
+{
+	...
+	XML_Signature_Unhex_Buf_300_Bytes[sig_inx] = v12 + v11;
+	inx += 2;
+	++sig_inx;
+}
+```
+
+### Code Review
+
+Since we fully control `XML_Signature_BufSize`, we can make `sig_inx` grow indefinetly. \
+Because the stack buffer is fixed-size, we obtain a clear OOB-W on the stack. 
+
+
 ## Fortify Source
 
 `-D_FORTIFY_SOURCE=1` adds compile-time checks for buffer overflows within the code.
@@ -1179,7 +1199,112 @@ CVE-2021-3064
 CVE-2020-16898
 ```
 
-And [this][blackhat-stack].
+And [this][blackhat-stack]. \
+Moreover, I've updated this page to contain some newer CVES:
+
+## CVE-2023-3725
+
+```c
+static inline int send_sf(struct isotp_send_ctx *ctx)
+{
+	struct can_frame frame = {
+		.flags = ctx->tx_addr.ide != 0 ? CAN_FRAME_IDE : 0,
+		.id = ctx->tx_addr.ext_id
+	};
+	size_t len = get_ctx_data_length(ctx);
+	int index = 0;
+	int ret;
+	const uint8_t *data;
+
+	data = get_data_ctx(ctx);
+	pull_data_ctx(ctx, len);
+
+	if (ctx->tx_addr.use_ext_addr) {
+		frame.data[index++] = ctx->tx_addr.ext_addr;
+	}
+
+	frame.data[index++] = ISOTP_PCI_TYPE_SF | len;
+
+	__ASSERT_NO_MSG(len <= ISOTP_CAN_DL - index);
+	memcpy(&frame.data[index], data, len); /* VULN */
+	...
+}
+```
+
+`data, len` are controlled by the user. \
+The `ASSERT_NO_MSG` is only a debug-mode assert, hence no-op for release builds. This means linear stack overflow of arbitrary size. 
+
+## CVE-2023-4259
+
+```c
+static int eswifi_shell_atcmd(const struct shell *sh, size_t argc,
+			      char **argv)
+{
+	int i;
+
+	if (eswifi == NULL) {
+		shell_print(sh, "no eswifi device registered");
+		return -ENOEXEC;
+	}
+
+	if (argc < 2) {
+		shell_help(sh);
+		return -ENOEXEC;
+	}
+
+	eswifi_lock(eswifi);
+
+	memset(eswifi->buf, 0, sizeof(eswifi->buf));
+	for (i = 1; i < argc; i++) {
+		strcat(eswifi->buf, argv[i]); /* VULN: static buffer overflow */
+	}
+	strcat(eswifi->buf, "\r");
+	...
+}
+```
+
+The loop iterates `argc - 1` times, for a constant-size buffer. Since we controll `argc`, clear OOB-W occurs.
+
+## CVE-2023-4260
+
+```c
+static int fuse_fs_access_readdir(const char *path, void *buf,
+			      fuse_fill_dir_t filler, off_t off,
+			      struct fuse_file_info *fi)
+{
+	struct fs_dir_t dir;
+	struct fs_dirent entry;
+	int err;
+	struct stat stat;
+
+	ARG_UNUSED(off);
+	ARG_UNUSED(fi);
+
+	if (strcmp(path, "/") == 0) {
+		return fuse_fs_access_readmount(buf, filler);
+	}
+
+	fs_dir_t_init(&dir);
+
+	if (is_mount_point(path)) {
+		/* File system API expects trailing slash for a mount point
+		 * directory but FUSE strips the trailing slashes from
+		 * directory names so add it back.
+		 */
+		char mount_path[PATH_MAX];
+
+		sprintf(mount_path, "%s/", path); /* VULN */
+		err = fs_opendir(&dir, mount_path);
+	} else {
+		err = fs_opendir(&dir, path);
+	}
+	...
+}
+```
+
+This one is abit subtle - while `path` is controlled by the user, the program correctly verifies its size (including the null byte) is `PATH_MAX`, at most. \
+However, because of the `sprintf` call which concatenates a single `'/'` byte without check, the resulting `mount_path` may be `PATH_MAX` non-null bytes, hence producing an untruncated string. 
+
 
 [uefi_bios_video]: https://www.youtube.com/watch?v=qxWfkSonK7M&ab_channel=DEFCONConference
 [gcc-instrumentation]: https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html
