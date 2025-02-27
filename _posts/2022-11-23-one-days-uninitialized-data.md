@@ -495,4 +495,471 @@ Another problematic aspect of this code, is the fact that `mapped_address` isn't
 
 ## CVE-2022-29968 - "Lord Of The io_urings"
 
+```c
+//////////////////////////////////////////////////////////////////////
+//XENO: Structure that isn't completely initialized
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * NOTE! Each of the iocb union members has the file pointer
+ * as the first entry in their struct definition. So you can
+ * access the file pointer through any of the sub-structs,
+ * or directly as just 'file' in this struct.
+ */
+struct io_kiocb {
+	union {
+		struct file		*file;
+		struct io_rw		rw;
+		struct io_poll_iocb	poll;
+		struct io_poll_update	poll_update;
+		struct io_accept	accept;
+		struct io_sync		sync;
+		struct io_cancel	cancel;
+		struct io_timeout	timeout;
+		struct io_timeout_rem	timeout_rem;
+		struct io_connect	connect;
+		struct io_sr_msg	sr_msg;
+		struct io_open		open;
+		struct io_close		close;
+		struct io_rsrc_update	rsrc_update;
+		struct io_fadvise	fadvise;
+		struct io_madvise	madvise;
+		struct io_epoll		epoll;
+		struct io_splice	splice;
+		struct io_provide_buf	pbuf;
+		struct io_statx		statx;
+		struct io_shutdown	shutdown;
+		struct io_rename	rename;
+		struct io_unlink	unlink;
+		struct io_mkdir		mkdir;
+		struct io_symlink	symlink;
+		struct io_hardlink	hardlink;
+		struct io_msg		msg;
+	};
+
+	u8				opcode;
+	/* polled IO has completed */
+	u8				iopoll_completed;
+	u16				buf_index;
+	unsigned int			flags;
+
+	u64				user_data;
+	u32				result;
+	/* fd initially, then cflags for completion */
+	union {
+		u32			cflags;
+		int			fd;
+	};
+
+	struct io_ring_ctx		*ctx;
+	struct task_struct		*task;
+
+	struct percpu_ref		*fixed_rsrc_refs;
+	/* store used ubuf, so we can prevent reloading */
+	struct io_mapped_ubuf		*imu;
+
+	union {
+		/* used by request caches, completion batching and iopoll */
+		struct io_wq_work_node	comp_list;
+		/* cache ->apoll->events */
+		int apoll_events;
+	};
+	atomic_t			refs;
+	atomic_t			poll_refs;
+	struct io_task_work		io_task_work;
+	/* for polled requests, i.e. IORING_OP_POLL_ADD and async armed poll */
+	struct hlist_node		hash_node;
+	/* internal polling, see IORING_FEAT_FAST_POLL */
+	struct async_poll		*apoll;
+	/* opcode allocated if it needs to store data for async defer */
+	void				*async_data;
+	/* stores selected buf, valid IFF REQ_F_BUFFER_SELECTED is set */
+	struct io_buffer		*kbuf;
+	/* linked requests, IFF REQ_F_HARDLINK or REQ_F_LINK are set */
+	struct io_kiocb			*link;
+	/* custom credentials, valid IFF REQ_F_CREDS is set */
+	const struct cred		*creds;
+	struct io_wq_work		work;
+};
+
+//////////////////////////////////////////////////////////////////////
+//XENO: Part of the path where incomplete initialization occurs
+//////////////////////////////////////////////////////////////////////
+
+static int io_read(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_rw_state __s, *s = &__s;
+	struct iovec *iovec;
+	struct kiocb *kiocb = &req->rw.kiocb;
+	bool force_nonblock = issue_flags & IO_URING_F_NONBLOCK;
+	struct io_async_rw *rw;
+	ssize_t ret, ret2;
+	loff_t *ppos;
+
+	if (!req_has_async_data(req)) {
+		ret = io_import_iovec(READ, req, &iovec, s, issue_flags);
+		if (unlikely(ret < 0))
+			return ret;
+	} else {
+		/*
+		 * Safe and required to re-import if we're using provided
+		 * buffers, as we dropped the selected one before retry.
+		 */
+		if (req->flags & REQ_F_BUFFER_SELECT) {
+			ret = io_import_iovec(READ, req, &iovec, s, issue_flags);
+			if (unlikely(ret < 0))
+				return ret;
+		}
+
+		rw = req->async_data;
+		s = &rw->s;
+		/*
+		 * We come here from an earlier attempt, restore our state to
+		 * match in case it doesn't. It's cheap enough that we don't
+		 * need to make this conditional.
+		 */
+		iov_iter_restore(&s->iter, &s->iter_state);
+		iovec = NULL;
+	}
+	ret = io_rw_init_file(req, FMODE_READ);
+	if (unlikely(ret)) {
+		kfree(iovec);
+		return ret;
+	}
+	req->result = iov_iter_count(&s->iter);
+
+	if (force_nonblock) {
+		/* If the file doesn't support async, just async punt */
+		if (unlikely(!io_file_supports_nowait(req))) {
+			ret = io_setup_async_rw(req, iovec, s, true);
+			return ret ?: -EAGAIN;
+		}
+		kiocb->ki_flags |= IOCB_NOWAIT;
+	} else {
+		/* Ensure we clear previously set non-block flag */
+		kiocb->ki_flags &= ~IOCB_NOWAIT;
+	}
+
+	ppos = io_kiocb_update_pos(req);
+
+	ret = rw_verify_area(READ, req->file, ppos, req->result);
+	if (unlikely(ret)) {
+		kfree(iovec);
+		return ret;
+	}
+
+	ret = io_iter_do_read(req, &s->iter);
+
+	if (ret == -EAGAIN || (req->flags & REQ_F_REISSUE)) {
+		req->flags &= ~REQ_F_REISSUE;
+		/* if we can poll, just do that */
+		if (req->opcode == IORING_OP_READ && file_can_poll(req->file))
+			return -EAGAIN;
+		/* IOPOLL retry should happen for io-wq threads */
+		if (!force_nonblock && !(req->ctx->flags & IORING_SETUP_IOPOLL))
+			goto done;
+		/* no retry on NONBLOCK nor RWF_NOWAIT */
+		if (req->flags & REQ_F_NOWAIT)
+			goto done;
+		ret = 0;
+	} else if (ret == -EIOCBQUEUED) {
+		goto out_free;
+	} else if (ret == req->result || ret <= 0 || !force_nonblock ||
+		   (req->flags & REQ_F_NOWAIT) || !need_read_all(req)) {
+		/* read all, failed, already did sync or don't want to retry */
+		goto done;
+	}
+
+	/*
+	 * Don't depend on the iter state matching what was consumed, or being
+	 * untouched in case of error. Restore it and we'll advance it
+	 * manually if we need to.
+	 */
+	iov_iter_restore(&s->iter, &s->iter_state);
+
+	ret2 = io_setup_async_rw(req, iovec, s, true);
+	if (ret2)
+		return ret2;
+
+	iovec = NULL;
+	rw = req->async_data;
+	s = &rw->s;
+	/*
+	 * Now use our persistent iterator and state, if we aren't already.
+	 * We've restored and mapped the iter to match.
+	 */
+
+	do {
+		/*
+		 * We end up here because of a partial read, either from
+		 * above or inside this loop. Advance the iter by the bytes
+		 * that were consumed.
+		 */
+		iov_iter_advance(&s->iter, ret);
+		if (!iov_iter_count(&s->iter))
+			break;
+		rw->bytes_done += ret;
+		iov_iter_save_state(&s->iter, &s->iter_state);
+
+		/* if we can retry, do so with the callbacks armed */
+		if (!io_rw_should_retry(req)) {
+			kiocb->ki_flags &= ~IOCB_WAITQ;
+			return -EAGAIN;
+		}
+
+		/*
+		 * Now retry read with the IOCB_WAITQ parts set in the iocb. If
+		 * we get -EIOCBQUEUED, then we'll get a notification when the
+		 * desired page gets unlocked. We can also get a partial read
+		 * here, and if we do, then just retry at the new offset.
+		 */
+		ret = io_iter_do_read(req, &s->iter);
+		if (ret == -EIOCBQUEUED)
+			return 0;
+		/* we got some bytes, but not all. retry. */
+		kiocb->ki_flags &= ~IOCB_WAITQ;
+		iov_iter_restore(&s->iter, &s->iter_state);
+	} while (ret > 0);
+done:
+	kiocb_done(req, ret, issue_flags);
+out_free:
+	/* it's faster to check here then delegate to kfree */
+	if (iovec)
+		kfree(iovec);
+	return 0;
+}
+
+static int io_rw_init_file(struct io_kiocb *req, fmode_t mode)
+{
+	struct kiocb *kiocb = &req->rw.kiocb;
+	struct io_ring_ctx *ctx = req->ctx;
+	struct file *file = req->file;
+	int ret;
+
+	if (unlikely(!file || !(file->f_mode & mode)))
+		return -EBADF;
+
+	if (!io_req_ffs_set(req))
+		req->flags |= io_file_get_flags(file) << REQ_F_SUPPORT_NOWAIT_BIT;
+
+	kiocb->ki_flags = iocb_flags(file);
+	ret = kiocb_set_rw_flags(kiocb, req->rw.flags);
+	if (unlikely(ret))
+		return ret;
+
+	/*
+	 * If the file is marked O_NONBLOCK, still allow retry for it if it
+	 * supports async. Otherwise it's impossible to use O_NONBLOCK files
+	 * reliably. If not, or it IOCB_NOWAIT is set, don't retry.
+	 */
+	if ((kiocb->ki_flags & IOCB_NOWAIT) ||
+	    ((file->f_flags & O_NONBLOCK) && !io_file_supports_nowait(req)))
+		req->flags |= REQ_F_NOWAIT;
+
+	if (ctx->flags & IORING_SETUP_IOPOLL) {
+		if (!(kiocb->ki_flags & IOCB_DIRECT) || !file->f_op->iopoll)
+			return -EOPNOTSUPP;
+
+		kiocb->ki_flags |= IOCB_HIPRI | IOCB_ALLOC_CACHE;
+		kiocb->ki_complete = io_complete_rw_iopoll;
+		req->iopoll_completed = 0;
+	} else {
+		if (kiocb->ki_flags & IOCB_HIPRI)
+			return -EINVAL;
+		kiocb->ki_complete = io_complete_rw;
+	}
+
+	return 0;
+}
+
+//////////////////////////////////////////////////////////////////////
+//XENO: Part of the path where uninitialized access occurs eventually
+//////////////////////////////////////////////////////////////////////
+
+
+static int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
+{
+	struct io_wq_work_node *pos, *start, *prev;
+	unsigned int poll_flags = BLK_POLL_NOSLEEP;
+	DEFINE_IO_COMP_BATCH(iob);
+	int nr_events = 0;
+
+	/*
+	 * Only spin for completions if we don't have multiple devices hanging
+	 * off our complete list.
+	 */
+	if (ctx->poll_multi_queue || force_nonspin)
+		poll_flags |= BLK_POLL_ONESHOT;
+
+	wq_list_for_each(pos, start, &ctx->iopoll_list) {
+		struct io_kiocb *req = container_of(pos, struct io_kiocb, comp_list);
+		struct kiocb *kiocb = &req->rw.kiocb;
+		int ret;
+
+		/*
+		 * Move completed and retryable entries to our local lists.
+		 * If we find a request that requires polling, break out
+		 * and complete those lists first, if we have entries there.
+		 */
+		if (READ_ONCE(req->iopoll_completed))
+			break;
+
+		ret = kiocb->ki_filp->f_op->iopoll(kiocb, &iob, poll_flags); //XENO: This calls iocb_bio_iopoll
+		if (unlikely(ret < 0))
+			return ret;
+		else if (ret)
+			poll_flags |= BLK_POLL_ONESHOT;
+
+		/* iopoll may have completed current req */
+		if (!rq_list_empty(iob.req_list) ||
+		    READ_ONCE(req->iopoll_completed))
+			break;
+	}
+
+	if (!rq_list_empty(iob.req_list))
+		iob.complete(&iob);
+	else if (!pos)
+		return 0;
+
+	prev = start;
+	wq_list_for_each_resume(pos, prev) {
+		struct io_kiocb *req = container_of(pos, struct io_kiocb, comp_list);
+
+		/* order with io_complete_rw_iopoll(), e.g. ->result updates */
+		if (!smp_load_acquire(&req->iopoll_completed))
+			break;
+		nr_events++;
+		if (unlikely(req->flags & REQ_F_CQE_SKIP))
+			continue;
+		__io_fill_cqe_req(req, req->result, io_put_kbuf(req, 0));
+	}
+
+	if (unlikely(!nr_events))
+		return 0;
+
+	io_commit_cqring(ctx);
+	io_cqring_ev_posted_iopoll(ctx);
+	pos = start ? start->next : ctx->iopoll_list.first;
+	wq_list_cut(&ctx->iopoll_list, prev, start);
+	io_free_batch_list(ctx, pos);
+	return nr_events;
+}
+
+/*
+ * Helper to implement file_operations.iopoll.  Requires the bio to be stored
+ * in iocb->private, and cleared before freeing the bio.
+ */
+int iocb_bio_iopoll(struct kiocb *kiocb, struct io_comp_batch *iob,
+		    unsigned int flags)
+{
+	struct bio *bio;
+	int ret = 0;
+
+	/*
+	 * Note: the bio cache only uses SLAB_TYPESAFE_BY_RCU, so bio can
+	 * point to a freshly allocated bio at this point.  If that happens
+	 * we have a few cases to consider:
+	 *
+	 *  1) the bio is beeing initialized and bi_bdev is NULL.  We can just
+	 *     simply nothing in this case
+	 *  2) the bio points to a not poll enabled device.  bio_poll will catch
+	 *     this and return 0
+	 *  3) the bio points to a poll capable device, including but not
+	 *     limited to the one that the original bio pointed to.  In this
+	 *     case we will call into the actual poll method and poll for I/O,
+	 *     even if we don't need to, but it won't cause harm either.
+	 *
+	 * For cases 2) and 3) above the RCU grace period ensures that bi_bdev
+	 * is still allocated. Because partitions hold a reference to the whole
+	 * device bdev and thus disk, the disk is also still valid.  Grabbing
+	 * a reference to the queue in bio_poll() ensures the hctxs and requests
+	 * are still valid as well.
+	 */
+	rcu_read_lock();
+	bio = READ_ONCE(kiocb->private);
+	if (bio && bio->bi_bdev)
+		ret = bio_poll(bio, iob, flags);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+/**
+ * bio_poll - poll for BIO completions
+ * @bio: bio to poll for
+ * @iob: batches of IO
+ * @flags: BLK_POLL_* flags that control the behavior
+ *
+ * Poll for completions on queue associated with the bio. Returns number of
+ * completed entries found.
+ *
+ * Note: the caller must either be the context that submitted @bio, or
+ * be in a RCU critical section to prevent freeing of @bio.
+ */
+int bio_poll(struct bio *bio, struct io_comp_batch *iob, unsigned int flags)
+{
+	struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+	blk_qc_t cookie = READ_ONCE(bio->bi_cookie);
+	int ret = 0;
+
+	if (cookie == BLK_QC_T_NONE ||
+	    !test_bit(QUEUE_FLAG_POLL, &q->queue_flags))
+		return 0;
+
+	blk_flush_plug(current->plug, false);
+
+	if (blk_queue_enter(q, BLK_MQ_REQ_NOWAIT))
+		return 0;
+	if (queue_is_mq(q)) {
+		ret = blk_mq_poll(q, cookie, iob, flags);
+	} else {
+		struct gendisk *disk = q->disk;
+
+		if (disk && disk->fops->poll_bio)
+			ret = disk->fops->poll_bio(bio, iob, flags);
+	}
+	blk_queue_exit(q);
+	return ret;
+}
+```
+
+The vuln is very hard to spot solely via code auditing. \
+However, the key observation is that `struct io_kiocb` first starts with a union, of: 
+
+```c
+union {
+	struct file		*file;
+	struct io_rw		rw;
+}
+
+
+```
+
+If we'd follow the whole initialization path, right from the `io_uring_enter` syscall handler, we'd see `struct io_kiocb req->file = filp` is correctly initialized. \
+However, **because of the union, it only initializes the first SIZEOF_PTR bytes of `io_rw`**. 
+This means that all bytes after the first `SIZEOF_PTR` bytes of `io_rw` might left UNINITIALIZED. 
+In particular, by observing the classes deinitions, we can see only the `filp
+
+```c
+strcut io_rw {
+		struct kiocb kiocb;
+		u64 addr;
+		u32 len;
+		u32 flags;
+}
+
+struct kiocb {
+	struct file *ki_filp;
+	....
+	void *private;
+	...
+}
+```
+
+Hence, `kiocb->private` might remain uninitialized! 
+This means we may control the value of `bio` within `bio_poll`, exploiting the uninitialized access. 
+
+## CVE-2019-1458 - Windows Kernel SetWindowLongPtr Syscall
+
+
 
