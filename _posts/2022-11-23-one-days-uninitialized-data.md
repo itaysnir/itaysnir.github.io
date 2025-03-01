@@ -959,7 +959,36 @@ struct kiocb {
 Hence, `kiocb->private` might remain uninitialized! 
 This means we may control the value of `bio` within `bio_poll`, exploiting the uninitialized access. 
 
-## CVE-2019-1458 - Windows Kernel SetWindowLongPtr Syscall
+## CVE-2021-27080 Azure Sphere Linux Kernel
 
+Copying the code snippet in here is a bit complex, as this vuln involves many contexts. \
+In short, `mqueue_get_inode` allocates an inode, but doesn't initializes it properly - internally, it calls `mqueue_alloc_inode` to perform allocation, but it solely calls `kmalloc`, without initializing the inode struct properly. 
+
+## Prevention
+
+The following are useful compilation flags, that force the compiler to initialize variables: `-ftrivial-auto-var-init=pattern[,zero]`. \
+Of course, the best practice is to perform manual initialization of EVERYTHING. For stack local vars - explicitly initialize during declaration. For heap object, ideally use zeroing allocator (or `calloc`). \
+For C++ code, while it zero-initializes more things than C, the rules are **fairly complicated**, and under certain scenarios doesn't initializes variables. As in C, always prefer initialize everything. \
+Another interesting option is **MSan**, the memory sanitizer, and **KMSan**. It may detect even a single bit of uninitialized data access during runtime. \
+A particular effective mitigation is using **Tagged Memory**, MTE for ARMv8.5+. It requires both compiler and HW support. It is mostly applicable to linear / non-linear OOB-W vulns, than to UDA, but it might still be effective (only to UDA controlled pointers). 
+
+## Further Learning
+
+There are many other interesting vulns I should take a look into. In particular:
+
+```bash
+CVE-2022-0847 "DirtyPipe" 
+CVE-2022-21971
+CVE-2021-0938
+CVE-2021-3928
+CVE-2020-17057
+CVE-2020-0853, CVE-2020-1397
+CVE-2020-14364
+CVE-2018-4196
+CVE-2018-10115
+CVE-2017-2358
+CVE-2016-10166
+CVE-2015-1745
+```
 
 
