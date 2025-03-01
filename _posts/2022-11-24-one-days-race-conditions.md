@@ -288,7 +288,77 @@ if (msglen > 0) {
 }
 ```
 
-## CVE-2021-34514 - Windows Kernal BALPC
+## CVE-2021-34514 - Windows Kernel BALPC
+
+The ALPC mechanism allows communication of userspace<->kernelspace. \
+Similar to LPC, it is an asynchronous, in order to improve performance. Another improvement is done using shared memory, thus - reducing data copy. 
+
+```c
+// Heavily simplified pseudocode for the vulnerable function
+void AlpcpCompleteDispatchMessage(_ALPC_DISPATCH_CONTEXT *DispatchContext)
+{
+	_ALPC_PORT *port;
+	_KALPC_MESSAGE *message;
+	_ALPC_COMPLETION_LIST *completionList;
+	_ALPC_MESSAGE_ATTRIBUTES *attributes;
+	_PORT_MESSAGE *userMappedMessage;
+
+	void *userMappedMessageData;
+	uint32_t completionBufferOffset;
+	uint32_t bufferLength;
+	uint32_t alignmentPadding = 0;
+
+	port = DispatchContext->TargetPort;
+	message = DispatchContext->Message;
+	completionList = port->CompletionList;
+	bufferLength = message->PortMessage.u1.s1.TotalLength;
+	bufferLength += completionList->AttributeSize + alignmentPadding;
+
+	// Finds free space in the completion list
+	completionBufferOffset = AlpcpAllocateCompletionBuffer(port, bufferLength);
+
+	userMappedMessage = (_PORT_MESSAGE *) ((uintptr_t) completionList->Data +
+                                                       completionBufferOffset);
+
+	// Message header is copied into shared user memory
+	*userMappedMessage = message->PortMessage;
+	userMappedMessageData = userMappedMessage + 0x1;
+
+	// Copy message body into shared user memory
+	if (message->DataUserVa == (void *)0x0){
+		AlpcpReadMessageData(message, userMappedMessageData);
+	}
+	else
+	{
+		AlpcpGetDataFromUserVaSafe(message, userMappedMessageData);
+	}
+
+	if (completionList->AttributeFlags != 0x0)
+	{
+		// Calulate offset and copy attributes into shared user memory
+		attributes = (_ALPC_MESSAGE_ATTRIBUTES *) ( (uintptr t) userMappedMessage +
+													userMappedMessage->u1.s1.TotalLength +
+													alignmentPadding);
+
+		attributes->AllocatedAttributes = completionList->AttributeFlags;
+		attributes->ValidAttributes = 0;
+		AlpcpExposeAttributes(port, 0, message, completionList->AttributeFlags, attributes);
+	}
+	//...
+}
+```
+
+`userMappedMessage` is the pointer to shared memory, which may be altered from userspace. \
+In particular, this shared memory is initialized to `message->PortMessage`, which contains an internal, legitimate `TotalLength` field. \
+The vulnerability resides within the deref of the shared memory:
+
+```c
+userMappedMessage->u1.s1.TotalLength
+```
+
+If the shared memory at that expected deref offset is altered, `TotalLength` would contain ACID value, setting some invalid value for the `attributes` pointer.
+
+## 2022-CVE-None-MSMu - Microsoft UEFI
 
 
 
