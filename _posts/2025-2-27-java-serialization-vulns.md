@@ -144,6 +144,5 @@ Notice - java serialization vulns are not exclusive to Java's custom serializati
 Example: consider a website that uses a serialized object to store data about user's session. If an attacker spotted this serialized object in an HTTP request, they may tamper this value, creating a custom serialized object. \
 We can pass in object of any serializable class that is available to the website's process, and the object will be deserialized. Hence, it allows attacker to create instances of arbitrary classes. In particular, attacker could look for classes containing deserialization magic methods (`readObject`), and check if any of them does interesting logic on a controllable data. 
 
-
 TODO: add code snippets from CERT
-
+TODO: add 1-day research
